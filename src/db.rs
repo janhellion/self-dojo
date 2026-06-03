@@ -221,6 +221,17 @@ impl Database {
         Ok((total, avg_energy, (high_count, low_count), top_weaknesses))
     }
 
+    /// Get linked weakness texts for patches in this entry
+    pub fn linked_pairs_for_entry(&self, entry_id: i64) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m1.text, m2.text FROM bridges b JOIN markers m1 ON b.patch_id = m1.id JOIN markers m2 ON b.weakness_id = m2.id WHERE m1.entry_id = ?1"
+        )?;
+        let rows = stmt.query_map(params![entry_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect()
+    }
+
     pub fn remove_entry(&self, file_path: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM entries WHERE file_path = ?1",

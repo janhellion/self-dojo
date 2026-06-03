@@ -362,6 +362,13 @@ fn cmd_log(database: &db::Database) {
             if !ps.is_empty() {
                 print!(" · patch({})", ps.join(", "));
             }
+            // Show linked pairs
+            if let Ok(pairs) = database.linked_pairs_for_entry(entry.id.unwrap()) {
+                if !pairs.is_empty() {
+                    let linked: Vec<String> = pairs.iter().map(|(p, w)| format!("{} → {}", p, w)).collect();
+                    print!(" · linked({})", linked.join(", "));
+                }
+            }
             println!();
             println!("    {}", entry.file_path);
         }

@@ -95,7 +95,10 @@ t() {
       menu_settings)       echo "Ajustes" ;;
       menu_leave)          echo "Salir" ;;
       # Mood
-      mood_title)          echo "¿Cómo te sientes?" ;;
+      mood_title)          echo "Â¿CÃ³mo te sientes?" ;;
+      energy_title)        echo "Â¿Nivel de energÃ­a, 1 al 10?" ;;
+      energy_hint)         echo "1 = agotado  Â·  10 = imparable" ;;
+      tags_recent)         echo "Tus etiquetas recientes:" ;;
       mood_tired)          echo "cansado" ;;
       mood_calm)           echo "tranquilo" ;;
       mood_focused)        echo "concentrado" ;;
@@ -176,6 +179,7 @@ t() {
       label_disabled)      echo "desactivado" ;;
       label_not_set)       echo "(sin configurar)" ;;
       label_back)          echo "Volver" ;;
+      tags_recent)         echo "Tus etiquetas recientes:" ;;
       *)                   echo "" ;;
     esac
   else
@@ -192,6 +196,9 @@ t() {
       menu_settings)       echo "Settings" ;;
       menu_leave)          echo "Leave" ;;
       mood_title)          echo "How are you feeling?" ;;
+      energy_title)        echo "Energy level, 1 to 10?" ;;
+      energy_hint)         echo "1 = drained  ·  10 = boundless" ;;
+      tags_recent)         echo "Your recent tags:" ;;
       mood_tired)          echo "tired" ;;
       mood_calm)           echo "calm" ;;
       mood_focused)        echo "focused" ;;
@@ -259,6 +266,7 @@ t() {
       label_disabled)      echo "disabled" ;;
       label_not_set)       echo "(not set)" ;;
       label_back)          echo "Back" ;;
+      tags_recent)         echo "Your recent tags:" ;;
       *)                   echo "" ;;
     esac
   fi
@@ -428,7 +436,32 @@ cmd_new() {
   echo ""
   mood=$(mood_key_for "${key}")
 
+  # ── Energy ─────────────────────────────────────────────────────────
+  local energy
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  echo ""
+  echo "  ᗢ"
+  echo ""
+  echo "  $(t energy_title)"
+  echo "  $(t energy_hint)"
+  echo ""
+  while true; do
+    echo -n "  > "
+    stty echo 2>/dev/null || true
+    read -r energy 2>/dev/null || energy="5"
+    [[ "${energy}" == "q" || "${energy}" == "quit" ]] && { quit_cleanup; exit 0; }
+    [[ -z "${energy}" ]] && energy="5"
+    if [[ "${energy}" =~ ^[0-9]+$ ]] && [ "${energy}" -ge 1 ] && [ "${energy}" -le 10 ]; then
+      break
+    fi
+    echo "  1–10 please"
+  done
+
   prompt=$(pick_mood_prompt "${mood}")
+
+  # ── Fetch recent tags for suggestions ──────────────────────────────
+  local recent_tags
+  recent_tags=$("${ENGINE}" weaknesses 2>/dev/null | head -5 | cut -d'|' -f2 | tr '\n' '|' | sed 's/|$//; s/|/, /g' || true)
 
   # ── Prompt screen — show it, let user roll or accept ───────────────
   while true; do
@@ -445,6 +478,10 @@ cmd_new() {
     echo "  ${DIM}$(t tag_title)${RESET}"
     echo "  ${DIM}$(t tag_stuck)${RESET}"
     echo "  ${DIM}$(t tag_helped)${RESET}"
+    if [[ -n "${recent_tags}" ]]; then
+      echo ""
+      echo "  ${DIM}$(t tags_recent) ${recent_tags}${RESET}"
+    fi
     echo ""
     echo "  $(t prompt_write_hint)    $(t prompt_roll)    $(t prompt_mood)"
     echo ""
@@ -483,6 +520,7 @@ cmd_new() {
     echo "---"
     echo "date: ${date_str}"
     echo "mood: ${mood}"
+    echo "energy: ${energy}"
     echo "prompt: ${prompt}"
     echo "---"
     echo ""
@@ -501,7 +539,7 @@ cmd_new() {
 
   # Process entry in background
   local engine_out
-  engine_out=$("${ENGINE}" new "${filepath}" 2>/dev/null || true)
+  engine_out=$("${ENGINE}" new "${filepath}" --energy "${energy}" --mood "${mood}" --prompt "${prompt}" 2>/dev/null || true)
 
   # Auto-link patches via Ollama if enabled
   local ai_enabled
@@ -533,14 +571,56 @@ for p in patches:
     "${ENGINE}" sync &>/dev/null || true
   fi
 
-  # Brief confirmation
-  stty sane 2>/dev/null || true
-  stty echo 2>/dev/null || true
-  clear
+  # ── Post-save insight ──────────────────────────────────────────────
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
   echo ""
   echo "  ᗢ"
   echo ""
-  echo "  $(pick_var "$(t saved_1)" "$(t saved_2)" "$(t saved_3)")"
+  echo "  $(pick_var "$(t saved_1)" "$(t saved_2)" "$(t saved_3)")  ·  ${mood}  ·  energy ${energy}/10"
+  echo ""
+
+  # Show weakness/patch summary
+  local wcount pcount linked_text
+  wcount=$(echo "${engine_out}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([m for m in d.get('markers',[]) if m['kind']=='weakness']))" 2>/dev/null || echo "0")
+  pcount=$(echo "${engine_out}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([m for m in d.get('markers',[]) if m['kind']=='patch']))" 2>/dev/null || echo "0")
+
+  if [ "${wcount}" -gt 0 ] || [ "${pcount}" -gt 0 ]; then
+    if [ "${wcount}" -gt 0 ]; then
+      echo "  Weaknesses tagged: ${wcount}"
+      # Show history for each weakness
+      local ws_text
+      ws_text=$(echo "${engine_out}" | python3 -c "
+import sys,json,subprocess
+d=json.load(sys.stdin)
+ws=[m['text'] for m in d.get('markers',[]) if m['kind']=='weakness']
+for w in ws: print(w)" 2>/dev/null || true)
+      while IFS= read -r wname; do
+        [[ -z "${wname}" ]] && continue
+        local w_hist
+        w_hist=$(sqlite3 "${DB}" "SELECT COUNT(*) FROM markers WHERE text='${wname}' AND kind='weakness'" 2>/dev/null || echo "?")
+        echo "    · ${wname}  (${w_hist}x total)"
+      done <<< "${ws_text}"
+    fi
+    if [ "${pcount}" -gt 0 ]; then
+      echo "  Patches found: ${pcount}"
+      local ps_text
+      ps_text=$(echo "${engine_out}" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+ps=[m['text'] for m in d.get('markers',[]) if m['kind']=='patch']
+for p in ps: print(p)" 2>/dev/null || true)
+      while IFS= read -r pname; do
+        [[ -z "${pname}" ]] && continue
+        echo "    + ${pname}"
+      done <<< "${ps_text}"
+    fi
+    if [ "${linked}" -gt 0 ]; then
+      echo "  Linked: ${linked} patch(es) connected to weaknesses"
+    fi
+  else
+    echo "  No tags used this entry."
+  fi
+
   press_enter
   cmd_menu
 }
