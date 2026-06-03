@@ -1,0 +1,912 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C.UTF-8  # ensure accented characters render
+
+# self-dojo — low-friction AuDHD-aware terminal journal
+# Flow: dojo → welcome menu → write in editor → save → back to menu
+
+ENGINE="${HOME}/dojo/target/release/dojo-engine"
+DATA_DIR="${HOME}/.local/share/self-dojo"
+CONFIG="${DATA_DIR}/config"
+ENTRIES_DIR="${DATA_DIR}/entries"
+DB="${DATA_DIR}/dojo.db"
+DB_ENC="${DATA_DIR}/dojo.db.enc"
+EDITOR="${EDITOR:-nano}"
+
+DIM="$(tput dim 2>/dev/null || printf '\033[2m')"
+RESET="$(tput sgr0 2>/dev/null || printf '\033[0m')"
+PIN=""
+
+mkdir -p "${DATA_DIR}" "${ENTRIES_DIR}"
+
+# ── Security: DB encryption via openssl aes-256-cbc ───────────────────
+db_decrypt() {
+  [[ ! -f "${DB_ENC}" ]] && return 0
+  openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:"${PIN}" \
+    -in "${DB_ENC}" -out "${DB}" 2>/dev/null || {
+    echo ""; echo "  $(t pin_wrong)"; echo ""; exit 1
+  }
+}
+
+db_encrypt() {
+  [[ ! -f "${DB}" ]] && return 0
+  openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:"${PIN}" \
+    -in "${DB}" -out "${DB_ENC}" 2>/dev/null || true
+  shred -u "${DB}" 2>/dev/null || rm -f "${DB}"
+}
+
+pin_hash() { echo -n "$1" | sha256sum | cut -d' ' -f1; }
+
+pin_prompt() {
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  echo ""
+  echo "  ᗢ"
+  echo ""
+  echo -n "  PIN: "
+  stty -echo 2>/dev/null || true
+  read -r PIN 2>/dev/null || true
+  stty echo 2>/dev/null || true
+  echo ""
+  [[ -z "${PIN}" ]] && { echo "  $(t pin_required)"; exit 1; }
+  return 0
+}
+
+pin_verify() {
+  local stored
+  stored=$(get_config "pin_hash")
+  [[ -z "${stored}" ]] && return 0  # no PIN set yet
+  [[ "$(pin_hash "${PIN}")" != "${stored}" ]] && {
+    echo ""; echo "  $(t pin_wrong)"; echo ""; exit 1
+  }
+  return 0
+}
+
+# ── Terminal safety — echo before EVERY user input ────────────────────
+_echo_on() { stty echo 2>/dev/null || true; }
+
+quit_cleanup() {
+  _echo_on
+  db_encrypt   # encrypt before exit
+  echo ""
+  echo "  ·  $(t quit_text)  ·"
+  echo ""
+}
+trap 'quit_cleanup; exit 0' SIGINT SIGTERM SIGQUIT
+
+# ── Translations ───────────────────────────────────────────────────────
+LANG=""  # set after config functions load below
+
+# t key [variant] — returns translated string for current language
+t() {
+  local k="$1"; shift
+
+  # Spanish translations (add more below)
+  if [[ "${LANG}" == "es" ]]; then
+    case "${k}" in
+      # Menu
+      greeting_morning)    pick_var "Buenos días, {name}." "Buen día, {name}." ;;
+      greeting_afternoon)  pick_var "Buenas tardes, {name}." ;;
+      greeting_evening)    pick_var "Buenas noches, {name}." ;;
+      menu_prompt)         echo "¿Qué hacemos?" ;;
+      menu_write)          echo "Escribir" ;;
+      menu_timeline)       echo "Línea de tiempo" ;;
+      menu_patterns)       echo "Patrones" ;;
+      menu_check)          echo "Revisión" ;;
+      menu_settings)       echo "Ajustes" ;;
+      menu_leave)          echo "Salir" ;;
+      # Mood
+      mood_title)          echo "¿Cómo te sientes?" ;;
+      mood_tired)          echo "cansado" ;;
+      mood_calm)           echo "tranquilo" ;;
+      mood_focused)        echo "concentrado" ;;
+      mood_scattered)      echo "disperso" ;;
+      mood_energetic)      echo "enérgico" ;;
+      mood_frustrated)     echo "frustrado" ;;
+      mood_reflective)     echo "reflexivo" ;;
+      mood_neutral)        echo "neutral" ;;
+      # Prompt
+      prompt_intro)        pick_var "Me pregunto..." "Aquí va una..." "Algo para reflexionar..." ;;
+      prompt_write_hint)   echo "[Enter] Escribir" ;;
+      prompt_roll)         echo "[r] Otra" ;;
+      prompt_mood)         echo "[m] Cambiar estado" ;;
+      # Tags
+      tag_title)           echo "Etiqueta lo que notes (opcional):" ;;
+      tag_stuck)           echo "me trabó...    @weakness[cosa]" ;;
+      tag_helped)          echo "me ayudó...   @patch[solución]" ;;
+      # Editor
+      editor_open)         echo "Presiona Enter para abrir ${EDITOR}..." ;;
+      # Saved
+      saved_1)             echo "Entrada guardada." ;;
+      saved_2)             echo "Anotado." ;;
+      saved_3)             echo "Listo." ;;
+      # Settings
+      settings_title)      echo "Ajustes" ;;
+      settings_name)       echo "Nombre" ;;
+      settings_ai)         echo "IA" ;;
+      settings_sync)       echo "Sync" ;;
+      settings_back)       echo "Volver" ;;
+      settings_name_prompt) echo "Cambiar nombre" ;;
+      settings_sync_prompt) echo "URL de CouchDB (vacío para desactivar)" ;;
+      settings_sync_format) echo "Formato: https://user:pass@host/db" ;;
+      # First run
+      first_name)          echo "¿Cómo te llamas?" ;;
+      first_pin_title)     echo "Elige un PIN para proteger tu diario." ;;
+      first_pin_hint)      echo "(deja vacío para omitir — no recomendado)" ;;
+      first_pin_prompt)    echo "PIN:" ;;
+      first_pin_confirm)   echo "Confirmar:" ;;
+      first_pin_mismatch)  echo "No coinciden. Se omite el bloqueo." ;;
+      first_ai_detect)     echo "Ollama detectado. ¿Activar enlace automático?" ;;
+      first_ai_hint)       echo "(@patch se vincula a @weakness automáticamente)" ;;
+      first_ready)         echo "Todo listo." ;;
+      # PIN
+      pin_prompt_label)    echo "PIN:" ;;
+      pin_wrong)           echo "PIN incorrecto." ;;
+      pin_required)        echo "Se requiere PIN." ;;
+      # Quit
+      quit_text)           echo "Hasta la próxima." ;;
+      # Log
+      log_nothing)         echo "Aún no hay nada." ;;
+      log_title)           echo "Línea de tiempo" ;;
+      # Deck
+      deck_title)          echo "Patrones" ;;
+      deck_entries)        echo "Entradas" ;;
+      deck_avg_energy)     echo "Energía prom." ;;
+      deck_high)           echo "Alta (7+)" ;;
+      deck_low)            echo "Baja (≤3)" ;;
+      deck_patched)        echo "Más atendidos" ;;
+      deck_no_data)        echo "Sin datos aún." ;;
+      # Check
+      check_title)         echo "Revisión del sistema" ;;
+      check_engine)        echo "Motor" ;;
+      check_ollama)        echo "Ollama" ;;
+      check_couchdb)       echo "CouchDB" ;;
+      check_entries)       echo "Entradas" ;;
+      check_models)        echo "Modelos" ;;
+      check_built)         echo "compilado" ;;
+      check_connected)     echo "conectado" ;;
+      check_offline)       echo "desconectado" ;;
+      # Help
+      help_text)           echo "self-dojo — diario de terminal para mentes AuDHD" ;;
+      help_usage)          echo "  dojo         Menú principal" ;;
+      help_log)            echo "  dojo log     Línea de tiempo" ;;
+      help_deck)           echo "  dojo deck    Patrones y estadísticas" ;;
+      help_check)          echo "  dojo check   Revisión del sistema" ;;
+      # OK/connected labels
+      label_enabled)       echo "activado" ;;
+      label_disabled)      echo "desactivado" ;;
+      label_not_set)       echo "(sin configurar)" ;;
+      label_back)          echo "Volver" ;;
+      *)                   echo "" ;;
+    esac
+  else
+    # English (default)
+    case "${k}" in
+      greeting_morning)    pick_var "Morning, {name}." "Good morning, {name}." ;;
+      greeting_afternoon)  pick_var "Afternoon, {name}." "Good afternoon, {name}." ;;
+      greeting_evening)    pick_var "Evening, {name}." "Good evening, {name}." ;;
+      menu_prompt)         echo "What now?" ;;
+      menu_write)          echo "Write" ;;
+      menu_timeline)       echo "Timeline" ;;
+      menu_patterns)       echo "Patterns" ;;
+      menu_check)          echo "Check" ;;
+      menu_settings)       echo "Settings" ;;
+      menu_leave)          echo "Leave" ;;
+      mood_title)          echo "How are you feeling?" ;;
+      mood_tired)          echo "tired" ;;
+      mood_calm)           echo "calm" ;;
+      mood_focused)        echo "focused" ;;
+      mood_scattered)      echo "scattered" ;;
+      mood_energetic)      echo "energetic" ;;
+      mood_frustrated)     echo "frustrated" ;;
+      mood_reflective)     echo "reflective" ;;
+      mood_neutral)        echo "neutral" ;;
+      prompt_intro)        pick_var "I wonder..." "Here is one..." "Something to reflect on..." ;;
+      prompt_write_hint)   echo "[Enter] Write" ;;
+      prompt_roll)         echo "[r] Another" ;;
+      prompt_mood)         echo "[m] Change mood" ;;
+      tag_title)           echo "Tag what you notice (optional):" ;;
+      tag_stuck)           echo "stuck by...   @weakness[thing]" ;;
+      tag_helped)          echo "helped by...  @patch[solution]" ;;
+      editor_open)         echo "Press Enter to open ${EDITOR}..." ;;
+      saved_1)             echo "Entry saved." ;;
+      saved_2)             echo "Recorded." ;;
+      saved_3)             echo "It is down." ;;
+      settings_title)      echo "Settings" ;;
+      settings_name)       echo "Name" ;;
+      settings_ai)         echo "AI" ;;
+      settings_sync)       echo "Sync" ;;
+      settings_back)       echo "Back" ;;
+      settings_name_prompt) echo "Change name" ;;
+      settings_sync_prompt) echo "CouchDB URL (blank to disable)" ;;
+      settings_sync_format) echo "Format: https://user:pass@host/db" ;;
+      first_name)          echo "What name should I call you?" ;;
+      first_pin_title)     echo "Set a PIN to lock your journal." ;;
+      first_pin_hint)      echo "(leave blank to skip — not recommended)" ;;
+      first_pin_prompt)    echo "PIN:" ;;
+      first_pin_confirm)   echo "Confirm:" ;;
+      first_pin_mismatch)  echo "PINs don't match. Skipping lock." ;;
+      first_ai_detect)     echo "Ollama detected. Enable AI linking?" ;;
+      first_ai_hint)       echo "(@patch auto-linked to @weakness)" ;;
+      first_ready)         echo "All set." ;;
+      pin_prompt_label)    echo "PIN:" ;;
+      pin_wrong)           echo "Wrong PIN." ;;
+      pin_required)        echo "PIN required." ;;
+      quit_text)           echo "Until next time." ;;
+      log_nothing)         echo "Nothing yet." ;;
+      log_title)           echo "Timeline" ;;
+      deck_title)          echo "Patterns" ;;
+      deck_entries)        echo "Entries" ;;
+      deck_avg_energy)     echo "Avg energy" ;;
+      deck_high)           echo "High (7+)" ;;
+      deck_low)            echo "Low (≤3)" ;;
+      deck_patched)        echo "Most-patched" ;;
+      deck_no_data)        echo "No data yet." ;;
+      check_title)         echo "System Check" ;;
+      check_engine)        echo "Engine" ;;
+      check_ollama)        echo "Ollama" ;;
+      check_couchdb)       echo "CouchDB" ;;
+      check_entries)       echo "Entries" ;;
+      check_models)        echo "Models" ;;
+      check_built)         echo "built" ;;
+      check_connected)     echo "connected" ;;
+      check_offline)       echo "offline" ;;
+      help_text)           echo "self-dojo — low-friction AuDHD-aware terminal journal" ;;
+      help_usage)          echo "  dojo         Welcome menu" ;;
+      help_log)            echo "  dojo log     Timeline" ;;
+      help_deck)           echo "  dojo deck    Patterns & stats" ;;
+      help_check)          echo "  dojo check   System check" ;;
+      label_enabled)       echo "enabled" ;;
+      label_disabled)      echo "disabled" ;;
+      label_not_set)       echo "(not set)" ;;
+      label_back)          echo "Back" ;;
+      *)                   echo "" ;;
+    esac
+  fi
+}
+
+# Replace {name} placeholder in translation output
+_t() {
+  local name result
+  name=$(get_config "name"); [[ -z "${name}" ]] && name="you"
+  result=$(t "$@")
+  echo "${result//\{name\}/${name}}"
+}
+
+# ── Config ────────────────────────────────────────────────────────────
+get_config() { grep -E "^${1}=" "${CONFIG}" 2>/dev/null | cut -d'=' -f2- | head -1 || true; }
+set_config() {
+  if grep -qE "^${1}=" "${CONFIG}" 2>/dev/null; then
+    sed -i "s|^${1}=.*|${1}=${2}|" "${CONFIG}"
+  else echo "${1}=${2}" >> "${CONFIG}"; fi
+}
+# Initialize language after config is available
+[[ -z "${LANG}" ]] && { LANG=$(get_config "lang" || true); [[ -z "${LANG}" ]] && LANG="en"; }
+
+# ── Box drawing ───────────────────────────────────────────────────────
+detect_cols() {
+  SCREEN_COLS=$(tput cols 2>/dev/null || echo 80)
+  BOX_INNER=$(( SCREEN_COLS < 60 ? 42 : SCREEN_COLS - 10 ))
+  [[ ${BOX_INNER} -gt 100 ]] && BOX_INNER=100
+  _box_dots=""; for ((i=0; i<BOX_INNER+4; i++)); do _box_dots+="·"; done
+}
+detect_cols
+box_top()   { echo "  ${DIM}${_box_dots}${RESET}"; }
+box_bot()   { echo "  ${DIM}${_box_dots}${RESET}"; }
+pick_var()  { local arr=("$@"); echo "${arr[$((RANDOM % ${#arr[@]}))]}"; }
+
+press_enter() {
+  echo ""; echo -n "  ${DIM}▸  Press Enter${RESET} "
+  stty echo 2>/dev/null || true
+  read -r 2>/dev/null || true  # NOT silent — user can see their keystroke
+  echo ""
+}
+
+# ── Mood & Prompt library ──────────────────────────────────────────────
+# Based on: Plutchik's circumplex (activation × valence), AuDHD sensory
+# states, and the principle of descriptive-not-evaluative labeling.
+#
+#   Activation axis:  low ← → high
+#   Valence axis:     negative ← → positive
+#
+# Quadrants:
+#   high+positive: focused, energetic, curious
+#   high+negative: scattered, frustrated, overstimulated
+#   low+positive:  calm, reflective, grounded
+#   low+negative:  tired, low, foggy
+#   center:        neutral, present, okay
+
+MOOD_CATEGORIES=(
+  "(._.) $(t mood_tired)"         # 1 — low activation, negative valence (droopy)
+  "(^_^) $(t mood_calm)"          # 2 — low activation, positive valence (content)
+  "(ò_ó) $(t mood_focused)"       # 3 — high activation, positive valence (intense)
+  "(@_@) $(t mood_scattered)"     # 4 — high activation, negative valence (dizzy)
+  "(*_*) $(t mood_energetic)"     # 5 — high activation, positive valence (starry)
+  "(>_<) $(t mood_frustrated)"    # 6 — high activation, negative valence (pained)
+  "(o_o) $(t mood_reflective)"    # 7 — low-mid activation, positive valence (wide-eyed)
+  "(-_-) $(t mood_neutral)"       # 8 — center, unmarked (flat)
+)
+
+# Prompt pools — each mood gets 4 prompts matched to that state
+declare -A MOOD_PROMPTS
+
+# tired (low-/neg): prompts about rest, avoidance, boundaries
+MOOD_PROMPTS["tired"]="What did I postpone that I actually had energy for?|What boundary did I wish I had set?|What am I avoiding right now?|What did I need but did not ask for?|What small win went unnoticed today?|What decision drained me today?|What rest did I actually get today?|What would make tomorrow feel easier?"
+
+# calm (low+/pos): prompts about presence, sensation, self
+MOOD_PROMPTS["calm"]="What sensory input helped or hurt today?|What did I do today just for me?|What helped me transition between tasks?|When did I feel most like myself today?|What am I grateful for right now?|Was there a moment of flow? What triggered it?|What did I learn by doing instead of thinking?|What felt effortless today?"
+
+# focused (high+/pos): prompts about flow, learning, wins, creation
+MOOD_PROMPTS["focused"]="Was there a moment of flow? What triggered it?|What did I learn by doing instead of thinking?|Did I hyperfocus on something unexpected?|What small win went unnoticed today?|What did I create or move forward today?|When did I feel understood today?|What decision drained me today?|What deserves more of this energy tomorrow?"
+
+# scattered (high+/neg): prompts about sensory, rumination, masking, noise
+MOOD_PROMPTS["scattered"]="Did I hit any sensory walls today?|What am I ruminating on right now?|What noise was too much?|Did I mask today? Was it worth it?|What executive function challenge showed up?|What pulled my focus away today?|What boundary did I wish I had set?|What one thing could have grounded me?"
+
+# energetic (high+/pos): prompts about momentum, decisions, connection, output
+MOOD_PROMPTS["energetic"]="Was there a moment of flow? What triggered it?|When did I feel understood today?|What decision drained me today?|What did I learn by doing instead of thinking?|What did I create or move forward today?|What did I do today just for me?|What small win went unnoticed today?|What is worth protecting this energy for?"
+
+# frustrated (high+/neg): prompts about barriers, stuckness, executive function
+MOOD_PROMPTS["frustrated"]="What executive function challenge showed up?|What decision drained me today?|What boundary did I wish I had set?|What did I need but did not ask for?|What am I avoiding right now?|What pulled my focus away today?|What did I postpone that I actually had energy for?|What would I change about how today went?"
+
+# reflective (low-mid+/pos): prompts about processing, patterns, meaning, self
+MOOD_PROMPTS["reflective"]="What helped me transition between tasks?|When did I feel most like myself today?|What small win went unnoticed today?|What did I do today just for me?|What did I learn by doing instead of thinking?|What sensory input helped or hurt today?|Was there a moment of flow? What triggered it?|What pattern do I see repeating lately?"
+
+# neutral (center): general prompts across all themes
+MOOD_PROMPTS["neutral"]="What pulled my focus away today?|What helped me transition between tasks?|Was there a moment of flow? What triggered it?|When did I feel understood today?|What did I do today just for me?|What small win went unnoticed today?|What did I learn by doing instead of thinking?|What is sitting in the background right now?"
+
+# ── Spanish prompt pools ────────────────────────────────────────────
+declare -A MOOD_PROMPTS_ES
+
+MOOD_PROMPTS_ES["tired"]="¿Qué pospuse hoy que en realidad tenía energía para hacer?|¿Qué límite desearía haber puesto?|¿Qué estoy evitando ahora mismo?|¿Qué necesité pero no pedí?|¿Qué pequeña victoria pasó desapercibida?|¿Qué decisión me agotó hoy?|¿Qué descanso sí tuve hoy?|¿Qué haría que mañana fuera más fácil?"
+
+MOOD_PROMPTS_ES["calm"]="¿Qué entrada sensorial me ayudó o me molestó hoy?|¿Qué hice hoy solo para mí?|¿Qué me ayudó a transicionar entre tareas?|¿Cuándo me sentí más yo mismo hoy?|¿De qué estoy agradecido ahora mismo?|¿Hubo un momento de flow? ¿Qué lo provocó?|¿Qué aprendí haciendo en vez de pensando?|¿Qué se sintió sin esfuerzo hoy?"
+
+MOOD_PROMPTS_ES["focused"]="¿Hubo un momento de flow? ¿Qué lo provocó?|¿Qué aprendí haciendo en vez de pensando?|¿Hiperconcentré en algo inesperado?|¿Qué pequeña victoria pasó desapercibida?|¿Qué creé o hice avanzar hoy?|¿Cuándo me sentí comprendido hoy?|¿Qué decisión me agotó?|¿Qué merece más de esta energía mañana?"
+
+MOOD_PROMPTS_ES["scattered"]="¿Toqué algún muro sensorial hoy?|¿En qué estoy rumiando ahora mismo?|¿Qué ruido fue demasiado?|¿Enmascaré hoy? ¿Valió la pena?|¿Qué desafío de función ejecutiva apareció?|¿Qué me robó la atención hoy?|¿Qué límite desearía haber puesto?|¿Qué cosa me habría ayudado a aterrizar?"
+
+MOOD_PROMPTS_ES["energetic"]="¿Hubo un momento de flow? ¿Qué lo provocó?|¿Cuándo me sentí comprendido hoy?|¿Qué decisión me agotó?|¿Qué aprendí haciendo en vez de pensando?|¿Qué creé o hice avanzar hoy?|¿Qué hice hoy solo para mí?|¿Qué pequeña victoria pasó desapercibida?|¿Qué vale la pena proteger de esta energía?"
+
+MOOD_PROMPTS_ES["frustrated"]="¿Qué desafío de función ejecutiva apareció?|¿Qué decisión me agotó hoy?|¿Qué límite desearía haber puesto?|¿Qué necesité pero no pedí?|¿Qué estoy evitando ahora mismo?|¿Qué me robó la atención hoy?|¿Qué pospuse que en realidad tenía energía para hacer?|¿Qué cambiaría de cómo fue hoy?"
+
+MOOD_PROMPTS_ES["reflective"]="¿Qué me ayudó a transicionar entre tareas?|¿Cuándo me sentí más yo mismo hoy?|¿Qué pequeña victoria pasó desapercibida?|¿Qué hice hoy solo para mí?|¿Qué aprendí haciendo en vez de pensando?|¿Qué entrada sensorial me ayudó o me molestó?|¿Hubo un momento de flow? ¿Qué lo provocó?|¿Qué patrón veo repitiéndose últimamente?"
+
+MOOD_PROMPTS_ES["neutral"]="¿Qué me robó la atención hoy?|¿Qué me ayudó a transicionar entre tareas?|¿Hubo un momento de flow? ¿Qué lo provocó?|¿Cuándo me sentí comprendido hoy?|¿Qué hice hoy solo para mí?|¿Qué pequeña victoria pasó desapercibida?|¿Qué aprendí haciendo en vez de pensando?|¿Qué está en el fondo ahora mismo?"
+
+# Pick mood key from selection index (1-8)
+mood_key_for() {
+  case "$1" in
+    1) echo "tired" ;;      2) echo "calm" ;;
+    3) echo "focused" ;;    4) echo "scattered" ;;
+    5) echo "energetic" ;;  6) echo "frustrated" ;;
+    7) echo "reflective" ;; 8) echo "neutral" ;;
+    *) echo "neutral" ;;
+  esac
+}
+
+# Pick a random prompt from a mood category
+pick_mood_prompt() {
+  local mood="${1:-neutral}"
+  local pool
+  if [[ "${LANG}" == "es" ]]; then
+    pool="${MOOD_PROMPTS_ES[$mood]:-${MOOD_PROMPTS_ES["neutral"]}}"
+  else
+    pool="${MOOD_PROMPTS[$mood]:-${MOOD_PROMPTS["neutral"]}}"
+  fi
+  local IFS='|'; local prompts=($pool)
+  echo "${prompts[$((RANDOM % ${#prompts[@]}))]}"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# WRITE
+# ═══════════════════════════════════════════════════════════════════════
+
+cmd_new() {
+  local date_str human_date human_time filepath slug prompt key mood
+  date_str=$(date +%Y-%m-%d)
+  human_date=$(date +"%A, %B %d, %Y")
+  human_time=$(date +"%H:%M")
+  slug="${date_str}_$(date +%H%M)"
+  filepath="${ENTRIES_DIR}/${slug}.md"
+  local c=1
+  while [[ -f "${filepath}" ]]; do
+    filepath="${ENTRIES_DIR}/${slug}_${c}.md"; c=$((c + 1))
+  done
+
+  # ── Mood selection ──────────────────────────────────────────────────
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  echo ""
+  echo "  $(t mood_title)"
+  echo ""
+  echo "  [1] ${MOOD_CATEGORIES[0]}    [2] ${MOOD_CATEGORIES[1]}"
+  echo "  [3] ${MOOD_CATEGORIES[2]}  [4] ${MOOD_CATEGORIES[3]}"
+  echo "  [5] ${MOOD_CATEGORIES[4]}  [6] ${MOOD_CATEGORIES[5]}"
+  echo "  [7] ${MOOD_CATEGORIES[6]}  [8] ${MOOD_CATEGORIES[7]}"
+  echo ""
+  echo -n "  > "
+  stty echo 2>/dev/null || true
+  read -n 1 -r key 2>/dev/null || key="8"
+  echo ""
+  mood=$(mood_key_for "${key}")
+
+  prompt=$(pick_mood_prompt "${mood}")
+
+  # ── Prompt screen — show it, let user roll or accept ───────────────
+  while true; do
+    stty sane 2>/dev/null || true
+    stty echo 2>/dev/null || true
+    clear
+    echo ""
+    echo "  ᗢ"
+    echo ""
+    echo "  ${DIM}${human_date}  ${human_time}${RESET}"
+    echo ""
+    echo "  ${prompt}"
+    echo ""
+    echo "  ${DIM}$(t tag_title)${RESET}"
+    echo "  ${DIM}$(t tag_stuck)${RESET}"
+    echo "  ${DIM}$(t tag_helped)${RESET}"
+    echo ""
+    echo "  $(t prompt_write_hint)    $(t prompt_roll)    $(t prompt_mood)"
+    echo ""
+    echo -n "  > "
+    stty echo 2>/dev/null || true
+    read -n 1 -r key 2>/dev/null || true
+    echo ""
+    case "${key}" in
+      r|R) prompt=$(pick_mood_prompt "${mood}"); continue ;;
+      m|M) 
+        # Back to mood selection
+        stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+        echo ""
+        echo "  $(t mood_title)"
+        echo ""
+        echo "  [1] ${MOOD_CATEGORIES[0]}    [2] ${MOOD_CATEGORIES[1]}"
+        echo "  [3] ${MOOD_CATEGORIES[2]}  [4] ${MOOD_CATEGORIES[3]}"
+        echo "  [5] ${MOOD_CATEGORIES[4]}  [6] ${MOOD_CATEGORIES[5]}"
+        echo "  [7] ${MOOD_CATEGORIES[6]}  [8] ${MOOD_CATEGORIES[7]}"
+        echo ""
+        echo -n "  > "
+        stty echo 2>/dev/null || true
+        read -n 1 -r key 2>/dev/null || key="8"
+        echo ""
+        mood=$(mood_key_for "${key}")
+        prompt=$(pick_mood_prompt "${mood}")
+        continue 
+        ;;
+      q|Q|$'\x03'|$'\x04') quit_cleanup; exit 0 ;;
+      *) break ;;
+    esac
+  done
+
+  # Write file with prompt as heading + mood
+  {
+    echo "---"
+    echo "date: ${date_str}"
+    echo "mood: ${mood}"
+    echo "prompt: ${prompt}"
+    echo "---"
+    echo ""
+    echo "${human_date}  ${human_time}"
+    echo "--------------------------------"
+    echo ""
+    echo "# ${prompt}"
+    echo ""
+  } > "${filepath}"
+
+  stty sane 2>/dev/null || true
+  stty echo 2>/dev/null || true
+  clear
+  # -S = softwrap  -w = nowrap  +9999 = cursor at last line (right under heading)
+  nano -S -w +9999 "${filepath}"
+
+  # Process entry in background
+  local engine_out
+  engine_out=$("${ENGINE}" new "${filepath}" 2>/dev/null || true)
+
+  # Auto-link patches via Ollama if enabled
+  local ai_enabled
+  ai_enabled=$(get_config "ai_enabled")
+  if [[ "${ai_enabled}" == "true" ]] && command -v ollama &>/dev/null; then
+    echo "${engine_out}" | python3 -c "
+import sys, json, subprocess
+d = json.load(sys.stdin)
+patches = [m for m in d.get('markers',[]) if m['kind']=='patch']
+engine = '${ENGINE}'
+for p in patches:
+    pid = p.get('id'); ptext = p.get('text','')
+    if not pid: continue
+    r = subprocess.run([engine,'suggest',ptext], capture_output=True, text=True, timeout=15)
+    if r.returncode != 0: continue
+    try:
+        sug = json.loads(r.stdout)
+        if sug.get('id'):
+            subprocess.run([engine,'link',str(pid),str(sug['id'])], capture_output=True, timeout=5)
+    except: pass
+" 2>/dev/null || true
+  fi
+
+  # Sync if configured
+  local couch_url
+  couch_url=$(get_config "couch_url")
+  [[ -n "${couch_url}" ]] && "${ENGINE}" sync &>/dev/null || true
+
+  # Brief confirmation
+  stty sane 2>/dev/null || true
+  stty echo 2>/dev/null || true
+  clear
+  echo ""
+  echo "  ᗢ"
+  echo ""
+  echo "  $(pick_var "$(t saved_1)" "$(t saved_2)" "$(t saved_3)")"
+  press_enter
+  cmd_menu
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# VIEWS
+# ═══════════════════════════════════════════════════════════════════════
+
+cmd_log() {
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  local log_output
+  log_output=$("${ENGINE}" log 2>/dev/null || echo "NO_ENTRIES")
+  echo ""
+
+  if [[ "${log_output}" == "NO_ENTRIES" ]]; then
+    echo "  $(t log_nothing)"
+    echo ""
+    press_enter; return
+  fi
+
+  echo "  ᗢ"
+  echo ""
+  echo "  $(t log_title)"
+  echo "  ${DIM}${_box_dots}${RESET}"
+  echo ""
+
+  local in_date=false
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+      ${in_date} && echo ""
+      echo "  ${line}"
+      in_date=true
+    elif [[ -n "${line}" ]]; then
+      echo "    ${line}"
+    fi
+  done <<< "${log_output}"
+
+  echo ""
+  echo "  ${DIM}${_box_dots}${RESET}"
+  echo ""
+  press_enter
+}
+
+cmd_deck() {
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  local stats
+  stats=$("${ENGINE}" deck 2>/dev/null || echo '{}')
+  echo ""
+  echo "  ᗢ"
+  echo ""
+
+  # Parse stats — output just values, labels done in bash
+  local entries avge high low ws_text
+  entries=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_entries',0))" 2>/dev/null || echo "0")
+  avge=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('avg_energy','0.0'))" 2>/dev/null || echo "0.0")
+  high=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('high_ratio','0/0'))" 2>/dev/null || echo "0/0")
+  low=$(echo "${stats}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('low_ratio','0/0'))" 2>/dev/null || echo "0/0")
+  ws_text=$(echo "${stats}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+ws = d.get('top_weaknesses', [])
+if ws:
+    for w in ws[:5]:
+        print(f'{w[\"text\"]}|{w[\"count\"]}')
+" 2>/dev/null || true)
+
+  echo "  $(t deck_entries):    ${entries}"
+  echo "  $(t deck_avg_energy): ${avge}/10"
+  echo "  $(t deck_high): ${high}"
+  echo "  $(t deck_low):  ${low}"
+
+  if [[ -n "${ws_text}" ]]; then
+    echo ""
+    echo "  $(t deck_patched):"
+    while IFS='|' read -r wtext wcount; do
+      [[ -n "${wtext}" ]] && echo "    · ${wtext}  (${wcount}x)"
+    done <<< "${ws_text}"
+  elif [[ "${entries}" == "0" ]]; then
+    echo ""
+    echo "  $(t deck_no_data)"
+  fi
+  echo ""
+  press_enter
+}
+
+cmd_check() {
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  echo ""
+  echo "  ᗢ"
+  echo ""
+  echo "  $(t check_title)"
+  echo "  ${DIM}${_box_dots}${RESET}"
+  echo ""
+
+  local engine_check olla couch entry_count models
+  engine_check=$("${ENGINE}" check 2>/dev/null || echo '{"ollama":false,"couchdb":false,"models":[]}')
+  olla=$(echo "${engine_check}" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('ollama') else 'false')" 2>/dev/null || echo "false")
+  couch=$(echo "${engine_check}" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('couchdb') else 'false')" 2>/dev/null || echo "false")
+  entry_count=$("${ENGINE}" deck 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_entries',0))" 2>/dev/null || echo "0")
+  models=$(echo "${engine_check}" | python3 -c "import sys,json; [print(f'    · {m}') for m in json.load(sys.stdin).get('models',[])]" 2>/dev/null || true)
+
+  # Translate status values
+  local olla_label couch_label
+  [[ "${olla}" == "true" ]] && olla_label="$(t check_connected)" || olla_label="$(t check_offline)"
+  [[ "${couch}" == "true" ]] && couch_label="$(t check_connected)" || couch_label="$(t check_offline)"
+
+  echo "  $(t check_engine):      $(t check_built)"
+  echo "  $(t check_ollama):      ${olla_label}"
+  echo "  $(t check_couchdb):     ${couch_label}"
+  echo "  $(t check_entries):     ${entry_count}"
+  [[ -n "${models}" ]] && echo "" && echo "  $(t check_models):" && echo "${models}"
+  echo ""
+  echo "  ${DIM}${_box_dots}${RESET}"
+  echo ""
+  press_enter
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# SETTINGS
+# ═══════════════════════════════════════════════════════════════════════
+
+cmd_settings() {
+  while true; do
+    stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+    local name ai couch key
+    name=$(get_config "name"); [[ -z "${name}" ]] && name="$(t label_not_set)"
+    ai=$(get_config "ai_enabled")
+    # Translate AI status to display label
+    [[ "${ai}" == "true" ]] && ai="$(t label_enabled)" || ai="$(t label_disabled)"
+    couch=$(get_config "couch_url"); [[ -z "${couch}" ]] && couch="$(t label_not_set)"
+
+    echo ""
+    echo "  ᗢ"
+    echo ""
+    echo "  $(t settings_title)"
+    echo "  ${DIM}${_box_dots}${RESET}"
+    echo ""
+    echo "  [n] $(t settings_name):     ${name}"
+    echo "  [a] $(t settings_ai):       ${ai}"
+    echo "  [c] $(t settings_sync):     ${couch}"
+    echo "  [l] Lang:     ${LANG}"
+    echo ""
+    echo "  [b] $(t settings_back)"
+    echo ""
+    echo -n "  > "
+    stty echo 2>/dev/null || true
+    read -n 1 -r key 2>/dev/null || key="b"
+    echo ""
+
+    case "${key}" in
+      n|N)
+        stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+        echo ""
+        echo "  $(t settings_name_prompt)"
+        echo ""
+        echo -n "  > "
+        stty echo 2>/dev/null || true
+        local new_name
+        read -r new_name 2>/dev/null || true
+        [[ -n "${new_name}" ]] && set_config "name" "${new_name}"
+        ;;
+      a|A)
+        local current
+        current=$(get_config "ai_enabled")
+        if [[ "${current}" == "true" ]]; then
+          set_config "ai_enabled" "false"
+        else
+          set_config "ai_enabled" "true"
+        fi
+        ;;
+      c|C)
+        stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+        echo ""
+        echo "  $(t settings_sync_prompt)"
+        echo "  $(t settings_sync_format)"
+        echo ""
+        echo -n "  > "
+        stty echo 2>/dev/null || true
+        local url
+        read -r url 2>/dev/null || true
+        set_config "couch_url" "${url}"
+        # Test connection if URL was entered
+        if [[ -n "${url}" ]]; then
+          echo ""
+          if curl -s --max-time 3 "${url}" >/dev/null 2>&1; then
+            echo "  $(t check_connected | sed 's/./\u&/')"
+          else
+            echo "  No se pudo conectar a ${url}"
+          fi
+          press_enter
+        fi
+        ;;
+      l|L)
+        [[ "${LANG}" == "en" ]] && LANG="es" || LANG="en"
+        set_config "lang" "${LANG}"
+        ;;
+      b|B|$'\x1b') cmd_menu; return ;;
+      q|Q|$'\x03'|$'\x04') quit_cleanup; exit 0 ;;
+    esac
+  done
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# WELCOME MENU — plain read, no gum, no terminal state games
+# ═══════════════════════════════════════════════════════════════════════
+
+cmd_menu() {
+  stty sane 2>/dev/null || true
+  stty echo 2>/dev/null || true
+  clear
+
+  local name greeting hour key
+  name=$(get_config "name"); [[ -z "${name}" ]] && name="you"
+
+  hour=$(date +%H)
+  if [ "${hour}" -lt 12 ]; then
+    greeting=$(_t greeting_morning)
+  elif [ "${hour}" -lt 18 ]; then
+    greeting=$(_t greeting_afternoon)
+  else
+    greeting=$(_t greeting_evening)
+  fi
+
+  echo ""
+  echo "  ᗢ"
+  echo ""
+  echo "  ${greeting}"
+  echo ""
+  echo "  [w] $(t menu_write)    [t] $(t menu_timeline)    [p] $(t menu_patterns)"
+  echo "  [c] $(t menu_check)    [s] $(t menu_settings)    [q] $(t menu_leave)"
+  echo ""
+  echo -n "  > "
+
+  stty echo 2>/dev/null || true
+  read -n 1 -r key 2>/dev/null || { cmd_menu; return; }
+  echo ""
+
+  case "${key}" in
+    w|W) cmd_new ;;
+    e|E) cmd_new ;;  # Spanish alias
+    t|T) cmd_log;  cmd_menu ;;
+    p|P) cmd_deck; cmd_menu ;;
+    c|C) cmd_check; cmd_menu ;;
+    s|S) cmd_settings; cmd_menu ;;
+    q|Q|$'\x03'|$'\x04') quit_cleanup; exit 0 ;;
+    *)   cmd_menu ;;  # any other key → redraw
+  esac
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# FIRST RUN
+# ═══════════════════════════════════════════════════════════════════════
+
+first_run() {
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  echo ""
+  echo "  ᗢ"
+  echo ""
+  echo "  ${DIM}self-dojo${RESET}"
+  echo ""
+  echo -n "  $(t first_name)  > "
+  stty echo 2>/dev/null || true
+  local new_name
+  read -r new_name 2>/dev/null || true
+  [[ -z "${new_name}" || "${new_name}" == "q" ]] && new_name="you"
+  set_config "name" "${new_name}"
+
+  # PIN setup — loop until match or skip
+  local p1 p2
+  while true; do
+    stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+    echo ""
+    echo "  $(t first_pin_title)"
+    echo "  $(t first_pin_hint)"
+    echo ""
+    echo -n "  $(t first_pin_prompt) "
+    stty -echo 2>/dev/null || true
+    read -r p1 2>/dev/null || true
+    stty echo 2>/dev/null || true
+    echo ""
+
+    [[ -z "${p1}" ]] && break  # skip PIN
+
+    echo -n "  $(t first_pin_confirm) "
+    stty -echo 2>/dev/null || true
+    read -r p2 2>/dev/null || true
+    stty echo 2>/dev/null || true
+    echo ""
+
+    if [[ "${p1}" == "${p2}" ]]; then
+      set_config "pin_hash" "$(pin_hash "${p1}")"
+      PIN="${p1}"
+      db_encrypt
+      break
+    else
+      echo "  $(t first_pin_mismatch)"
+      echo ""
+      press_enter
+    fi
+  done
+
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  if command -v ollama &>/dev/null && curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo ""
+    echo "  $(t first_ai_detect)"
+    echo "    $(t first_ai_hint)"
+    echo ""
+    echo -n "  [y] $(t label_enabled | sed 's/./\u&/')    [n] $(t label_disabled | sed 's/./\u&/')  > "
+    stty echo 2>/dev/null || true
+    read -n 1 -r key 2>/dev/null || key="n"
+    echo ""
+    if [[ "${key}" == "y" || "${key}" == "Y" ]]; then
+      set_config "ai_enabled" "true"
+    else
+      set_config "ai_enabled" "false"
+    fi
+  else
+    set_config "ai_enabled" "false"
+  fi
+  set_config "couch_url" ""
+
+  # Language selection
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
+  echo ""
+  echo "  Language / Idioma"
+  echo ""
+  echo "  [1] English    [2] Español"
+  echo ""
+  echo -n "  > "
+  stty echo 2>/dev/null || true
+  local lang_key
+  read -n 1 -r lang_key 2>/dev/null || lang_key="1"
+  echo ""
+  [[ "${lang_key}" == "2" ]] && LANG="es" || LANG="en"
+  set_config "lang" "${LANG}"
+  echo ""
+  echo "  $(t first_ready)"
+  press_enter
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════
+
+main() {
+  # PIN gate — prompt and decrypt before anything else
+  if [[ -f "${CONFIG}" ]] && [[ -n "$(get_config pin_hash)" ]]; then
+    pin_prompt
+    pin_verify
+    db_decrypt
+  fi
+
+  case "${1:-}" in
+    log)    cmd_log ;;
+    deck)   cmd_deck ;;
+    check)  cmd_check ;;
+    help|--help|-h)
+      echo "$(t help_text)"
+      echo ""
+      echo "  $(t help_usage)"
+      echo "  $(t help_log)"
+      echo "  $(t help_deck)"
+      echo "  $(t help_check)"
+      ;;
+    *)
+      [[ ! -f "${CONFIG}" ]] && first_run
+      cmd_menu
+      ;;
+  esac
+}
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"

@@ -1,0 +1,113 @@
+use serde_json::{json, Value};
+use std::path::Path;
+
+const DEFAULT_COUCH_URL: &str = "http://localhost:5984";
+
+/// Push a markdown file with its SQLite rows (markers + bridges) to CouchDB.
+pub fn push_to_couch(
+    file_path: &str,
+    entry_json: &Value,
+    couch_url: &str,
+) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let url = couch_url.trim_end_matches('/').to_string();
+
+    // Ensure database exists
+    let db_name = "self-dojo";
+    let create_resp = client
+        .put(format!("{}/{}", url, db_name))
+        .send()
+        .map_err(|e| format!("Failed to connect to CouchDB: {}", e))?;
+
+    if !create_resp.status().is_success() && create_resp.status().as_u16() != 412 {
+        return Err(format!(
+            "Failed to create CouchDB database: {}",
+            create_resp.status()
+        ));
+    }
+
+    let markdown_content = std::fs::read_to_string(file_path)
+        .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
+
+    let file_name = Path::new(file_path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let doc_id = format!("entry_{}", file_name.replace(['/', '\\', ' '], "_"));
+
+    let doc = json!({
+        "_id": doc_id,
+        "type": "journal_entry",
+        "content": markdown_content,
+        "file_path": file_path,
+        "sqlite_rows": entry_json,
+    });
+
+    let put_resp = client
+        .put(format!("{}/{}/{}", url, db_name, doc_id))
+        .json(&doc)
+        .send()
+        .map_err(|e| format!("Failed to push to CouchDB: {}", e))?;
+
+    if !put_resp.status().is_success() {
+        return Err(format!("CouchDB push failed: {}", put_resp.status()));
+    }
+
+    Ok(())
+}
+
+/// Check if CouchDB is reachable
+pub fn check_couch(couch_url: &str) -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match client.get(couch_url).send() {
+        Ok(r) => r.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+/// Get CouchDB config from defaults or env var
+pub fn get_couch_url() -> String {
+    std::env::var("DOJO_COUCH_URL").unwrap_or_else(|_| DEFAULT_COUCH_URL.to_string())
+}
+
+pub fn list_remote_docs(couch_url: &str) -> Vec<String> {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let url = format!(
+        "{}/self-dojo/_all_docs?include_docs=false",
+        couch_url.trim_end_matches('/')
+    );
+
+    let resp: Value = match client.get(&url).send().ok() {
+        Some(r) => r.json().unwrap_or(json!(null)),
+        None => return vec![],
+    };
+
+    resp["rows"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r["id"].as_str().map(|s| s.to_string()))
+                .filter(|id| !id.starts_with('_'))
+                .collect()
+        })
+        .unwrap_or_default()
+}
