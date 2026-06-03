@@ -3,3 +3,5 @@ target/
 *.db.enc
 entries/
 config
+Cargo.lock
+Cargo.lock

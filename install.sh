@@ -96,7 +96,7 @@ cd "$DOJO_DIR"
 # ── Build engine ─────────────────────────────────────────────────────
 echo ""
 echo "  Building Rust engine..."
-cargo build --release 2>&1 | tail -2
+cargo build --release 2>cargo build --release 2>&1 | tail -21 | tail -20
 
 if [[ ! -x "target/release/dojo-engine" ]]; then
   echo "  ${RED}Build failed${RESET}"
@@ -107,7 +107,7 @@ echo "  ${GREEN}Engine built${RESET}"
 # ── Install wrapper ──────────────────────────────────────────────────
 BIN_DIR="${HOME}/.local/bin"
 mkdir -p "$BIN_DIR"
-cp dojo "$BIN_DIR/dojo"
+mkdir -p "$BIN_DIR" && cp dojo "$BIN_DIR/dojo"
 chmod +x "$BIN_DIR/dojo"
 echo "  ${GREEN}Wrapper installed to ${BIN_DIR}/dojo${RESET}"
 
