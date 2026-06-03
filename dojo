@@ -460,8 +460,13 @@ cmd_new() {
   prompt=$(pick_mood_prompt "${mood}")
 
   # ── Fetch recent tags for suggestions ──────────────────────────────
-  local recent_tags
-  recent_tags=$("${ENGINE}" weaknesses 2>/dev/null | head -5 | cut -d'|' -f2 | tr '\n' '|' | sed 's/|$//; s/|/, /g' || true)
+  local recent_tags unresolved resolved_pairs
+  recent_tags=$("${ENGINE}" weaknesses 2>/dev/null | head -5 | cut -d'|' -f2 | tr '\n' ',' | sed 's/,$//; s/,/, /g' || true)
+  # Get unresolved weaknesses count
+  local unresolved_count
+  unresolved_count=$("${ENGINE}" weaknesses --json 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+  # Get recently linked pairs
+  resolved_pairs=$(sqlite3 "${DB}" "SELECT m1.text || ' → ' || m2.text FROM bridges b JOIN markers m1 ON b.patch_id = m1.id JOIN markers m2 ON b.weakness_id = m2.id ORDER BY b.id DESC LIMIT 3" 2>/dev/null || true)
 
   # ── Prompt screen — show it, let user roll or accept ───────────────
   while true; do
@@ -476,11 +481,18 @@ cmd_new() {
     echo "  ${prompt}"
     echo ""
     echo "  ${DIM}$(t tag_title)${RESET}"
-    echo "  ${DIM}$(t tag_stuck)${RESET}"
-    echo "  ${DIM}$(t tag_helped)${RESET}"
+    echo "  ${DIM}struggle: @weakness[thing]     solution: @patch[solution]${RESET}"
+    # Show unresolved weaknesses as suggestions
     if [[ -n "${recent_tags}" ]]; then
       echo ""
-      echo "  ${DIM}$(t tags_recent) ${recent_tags}${RESET}"
+      echo "  ${DIM}Still open: ${recent_tags}${RESET}"
+    fi
+    # Show recent solutions that worked
+    if [[ -n "${resolved_pairs}" ]]; then
+      echo "  ${DIM}Solved:${RESET}"
+      while IFS= read -r pair; do
+        [[ -n "${pair}" ]] && echo "  ${DIM}  ${pair}${RESET}"
+      done <<< "${resolved_pairs}"
     fi
     echo ""
     echo "  $(t prompt_write_hint)    $(t prompt_roll)    $(t prompt_mood)"
