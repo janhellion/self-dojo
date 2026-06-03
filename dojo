@@ -499,7 +499,7 @@ pick_mood_prompt() {
 # ═══════════════════════════════════════════════════════════════════════
 
 cmd_new() {
-  local date_str human_date human_time filepath slug prompt key mood mood_mode time_of_day
+  local date_str human_date human_time filepath slug prompt key mood time_of_day
   date_str=$(date +%Y-%m-%d)
   human_date=$(date +"%A, %B %d, %Y")
   human_time=$(date +"%H:%M")
@@ -512,7 +512,6 @@ cmd_new() {
 
   # Detect time of day for prompt pool
   time_of_day=$(detect_time_of_day)
-  mood_mode=0  # 0 = time-based prompts, 1 = mood-based
 
   # ── Mood selection ──────────────────────────────────────────────────
   stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
@@ -597,16 +596,9 @@ cmd_new() {
     read -n 1 -r key 2>/dev/null || true
     echo ""
     case "${key}" in
-      r|R)
-        if [[ "${mood_mode}" -eq 1 ]]; then
-          prompt=$(pick_mood_prompt "${mood}")
-        else
-          prompt=$(pick_time_prompt "${time_of_day}")
-        fi
-        continue ;;
+      r|R) prompt=$(pick_time_prompt "${time_of_day}"); continue ;;
       m|M)
-        mood_mode=1
-        # Back to mood selection
+        # Re-select mood for frontmatter — prompt stays time-based
         stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
         echo ""
         echo "  $(t mood_title)"
@@ -621,7 +613,7 @@ cmd_new() {
         read -n 1 -r key 2>/dev/null || key="8"
         echo ""
         mood=$(mood_key_for "${key}")
-        prompt=$(pick_mood_prompt "${mood}")
+        prompt=$(pick_time_prompt "${time_of_day}")
         continue 
         ;;
       q|Q|$'\x03'|$'\x04') quit_cleanup; exit 0 ;;
