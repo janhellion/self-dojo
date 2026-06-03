@@ -126,8 +126,8 @@ t() {
       settings_sync)       echo "Sync" ;;
       settings_back)       echo "Volver" ;;
       settings_name_prompt) echo "Cambiar nombre" ;;
-      settings_sync_prompt) echo "URL de CouchDB (vacío para desactivar)" ;;
-      settings_sync_format) echo "Formato: https://user:pass@host/db" ;;
+      settings_sync_prompt) echo "URL de la base CouchDB (vacío para desactivar)" ;;
+      settings_sync_format) echo "Formato: https://user:pass@host/self-dojo" ;;
       # First run
       first_name)          echo "¿Cómo te llamas?" ;;
       first_pin_title)     echo "Elige un PIN para proteger tu diario." ;;
@@ -217,8 +217,8 @@ t() {
       settings_sync)       echo "Sync" ;;
       settings_back)       echo "Back" ;;
       settings_name_prompt) echo "Change name" ;;
-      settings_sync_prompt) echo "CouchDB URL (blank to disable)" ;;
-      settings_sync_format) echo "Format: https://user:pass@host/db" ;;
+      settings_sync_prompt) echo "CouchDB database URL (blank to disable)" ;;
+      settings_sync_format) echo "Format: https://user:pass@host/self-dojo" ;;
       first_name)          echo "What name should I call you?" ;;
       first_pin_title)     echo "Set a PIN to lock your journal." ;;
       first_pin_hint)      echo "(leave blank to skip — not recommended)" ;;
