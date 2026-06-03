@@ -354,15 +354,23 @@ press_enter() {
 #   center:        neutral, present, okay
 
 MOOD_CATEGORIES=(
-  "(._.) $(t mood_tired)"         # 1 — low activation, negative valence (droopy)
-  "(^_^) $(t mood_calm)"          # 2 — low activation, positive valence (content)
-  "(ò_ó) $(t mood_focused)"       # 3 — high activation, positive valence (intense)
-  "(@_@) $(t mood_scattered)"     # 4 — high activation, negative valence (dizzy)
-  "(*_*) $(t mood_energetic)"     # 5 — high activation, positive valence (starry)
-  "(>_<) $(t mood_frustrated)"    # 6 — high activation, negative valence (pained)
-  "(o_o) $(t mood_reflective)"    # 7 — low-mid activation, positive valence (wide-eyed)
-  "(-_-) $(t mood_neutral)"       # 8 — center, unmarked (flat)
+  "(._.) $(t mood_tired)"         # 1
+  "(^_^) $(t mood_calm)"          # 2
+  "(ò_ó) $(t mood_focused)"       # 3
+  "(@_@) $(t mood_scattered)"     # 4
+  "(*_*) $(t mood_energetic)"     # 5
+  "(>_<) $(t mood_frustrated)"    # 6
+  "(o_o) $(t mood_reflective)"    # 7
+  "(-_-) $(t mood_neutral)"       # 8
 )
+
+# Print mood selection menu — call via function so language changes take effect
+mood_menu() {
+  echo "  [1] $(t mood_tired)    [2] $(t mood_calm)"
+  echo "  [3] $(t mood_focused)  [4] $(t mood_scattered)"
+  echo "  [5] $(t mood_energetic)  [6] $(t mood_frustrated)"
+  echo "  [7] $(t mood_reflective)  [8] $(t mood_neutral)"
+}
 
 # Prompt pools — each mood gets 4 prompts matched to that state
 declare -A MOOD_PROMPTS
@@ -518,10 +526,7 @@ cmd_new() {
   echo ""
   echo "  $(t mood_title)"
   echo ""
-  echo "  [1] ${MOOD_CATEGORIES[0]}    [2] ${MOOD_CATEGORIES[1]}"
-  echo "  [3] ${MOOD_CATEGORIES[2]}  [4] ${MOOD_CATEGORIES[3]}"
-  echo "  [5] ${MOOD_CATEGORIES[4]}  [6] ${MOOD_CATEGORIES[5]}"
-  echo "  [7] ${MOOD_CATEGORIES[6]}  [8] ${MOOD_CATEGORIES[7]}"
+  mood_menu
   echo ""
   echo -n "  > "
   stty echo 2>/dev/null || true
@@ -603,10 +608,7 @@ cmd_new() {
         echo ""
         echo "  $(t mood_title)"
         echo ""
-        echo "  [1] ${MOOD_CATEGORIES[0]}    [2] ${MOOD_CATEGORIES[1]}"
-        echo "  [3] ${MOOD_CATEGORIES[2]}  [4] ${MOOD_CATEGORIES[3]}"
-        echo "  [5] ${MOOD_CATEGORIES[4]}  [6] ${MOOD_CATEGORIES[5]}"
-        echo "  [7] ${MOOD_CATEGORIES[6]}  [8] ${MOOD_CATEGORIES[7]}"
+        mood_menu
         echo ""
         echo -n "  > "
         stty echo 2>/dev/null || true
@@ -648,6 +650,7 @@ cmd_new() {
   engine_out=$("${ENGINE}" new "${filepath}" --energy "${energy}" --mood "${mood}" --prompt "${prompt}" 2>/dev/null || true)
 
   # Auto-link patches via Ollama if enabled
+  local linked=0
   local ai_enabled
   ai_enabled=$(get_config "ai_enabled")
   if [[ "${ai_enabled}" == "true" ]] && command -v ollama &>/dev/null; then
@@ -667,6 +670,14 @@ for p in patches:
             subprocess.run([engine,'link',str(pid),str(sug['id'])], capture_output=True, timeout=5)
     except: pass
 " 2>/dev/null || true
+    # Count linked patches for this entry from DB
+    linked=$(
+      sqlite3 "${DB}" "
+        SELECT COUNT(*) FROM bridges b
+        JOIN markers m ON b.patch_id = m.id
+        WHERE m.entry_id = (SELECT id FROM entries WHERE file_path = '${filepath//\'/''}')
+      " 2>/dev/null || echo "0"
+    )
   fi
 
   # Sync if configured
@@ -780,8 +791,7 @@ cmd_log() {
       echo "  ${DIM}${_box_dots}${RESET}"
       echo ""
       local del_list del_choice
-      del_list=$("${ENGINE}" log 2>/dev/null || echo "")
-      del_list=$(echo "${del_list}" | grep "\\.md$" | head -15 || true)
+      del_list=$("${ENGINE}" list 2>/dev/null || true)
       if [[ -z "${del_list}" ]]; then
         echo "  $(t log_no_entries)"
         press_enter
@@ -789,7 +799,8 @@ cmd_log() {
       fi
       local i=1
       while IFS= read -r del_path; do
-        echo "  [${i}] ${del_path}"
+        local fname; fname=$(basename "${del_path}" 2>/dev/null || echo "${del_path}")
+        echo "  [${i}] ${fname}"
         i=$((i + 1))
       done <<< "${del_list}"
       echo ""
@@ -799,6 +810,8 @@ cmd_log() {
       if [[ "${del_choice}" =~ ^[0-9]+$ ]]; then
         local selected_path
         selected_path=$(echo "${del_list}" | sed -n "${del_choice}p")
+        # Trim leading/trailing whitespace
+        selected_path=$(echo "${selected_path}" | xargs)
         if [[ -n "${selected_path}" ]]; then
           echo ""
           echo -n "  $(t log_delete_confirm)"

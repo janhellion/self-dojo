@@ -74,6 +74,8 @@ enum Commands {
     Remove {
         file: String,
     },
+    /// List all entry file paths (one per line, for delete/view)
+    List,
 }
 
 fn get_db_path(cli_db: Option<&String>) -> PathBuf {
@@ -124,6 +126,7 @@ fn main() {
         Commands::Pull => cmd_pull(&database),
         Commands::Check => cmd_check(),
         Commands::Remove { file } => cmd_remove(&database, file),
+        Commands::List => cmd_list(&database),
     }
 }
 
@@ -601,5 +604,15 @@ fn cmd_remove(database: &db::Database, file: &str) {
     match database.remove_entry(file) {
         Ok(_) => println!("Removed entry for: {}", file),
         Err(e) => eprintln!("Failed to remove entry: {}", e),
+    }
+}
+
+fn cmd_list(database: &db::Database) {
+    let entries = match database.all_entries() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in &entries {
+        println!("{}", entry.file_path);
     }
 }
