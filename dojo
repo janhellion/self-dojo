@@ -792,7 +792,7 @@ cmd_settings() {
         echo -n "  > "
         stty echo 2>/dev/null || true
         local new_name
-        read -e -r new_name 2>/dev/null || true
+        read -r new_name 2>/dev/null || true
         [[ -n "${new_name}" ]] && set_config "name" "${new_name}"
         ;;
       a|A)
@@ -813,7 +813,7 @@ cmd_settings() {
         echo -n "  > "
         stty echo 2>/dev/null || true
         local url
-        read -e -r url 2>/dev/null || true
+        read -r url 2>/dev/null || true
         set_config "couch_url" "${url}"
         # Test connection if URL was entered
         if [[ -n "${url}" ]]; then
@@ -895,9 +895,9 @@ first_run() {
   echo "  ${DIM}self-dojo${RESET}"
   echo ""
   echo -n "  $(t first_name)  > "
-  stty echo 2>/dev/null || true
+  stty sane 2>/dev/null || true; stty echo 2>/dev/null || true
   local new_name
-  read -e -r new_name 2>/dev/null || true
+  read -r new_name 2>/dev/null || true
   [[ -z "${new_name}" || "${new_name}" == "q" ]] && new_name="you"
   set_config "name" "${new_name}"
 
