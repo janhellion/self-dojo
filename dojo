@@ -811,7 +811,8 @@ cmd_settings() {
         echo "  $(t settings_sync_format)"
         echo ""
         echo -n "  > "
-        stty echo 2>/dev/null || true
+        # Force terminal to cooked mode with echo
+        stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; stty icanon 2>/dev/null || true
         local url
         read -r url 2>/dev/null || true
         set_config "couch_url" "${url}"
