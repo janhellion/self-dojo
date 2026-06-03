@@ -1,51 +1,113 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# self-dojo installer
-# Installs the Rust engine and bash wrapper
+# self-dojo installer — one-command setup for any Linux machine
+# Usage: curl -sL https://raw.githubusercontent.com/janhellion/self-dojo/master/install.sh | bash
+#    or: git clone https://github.com/janhellion/self-dojo && cd self-dojo && bash install.sh
 
-DOJO_SRC="${HOME}/dojo"
-BIN_DIR="${HOME}/.local/bin"
-DATA_DIR="${HOME}/.local/share/self-dojo"
+BOLD="$(tput bold 2>/dev/null || echo '')"
+RESET="$(tput sgr0 2>/dev/null || echo '')"
+GREEN="$(tput setaf 2 2>/dev/null || echo '')"
+RED="$(tput setaf 1 2>/dev/null || echo '')"
 
-echo "self-dojo installer"
-echo "···················"
 echo ""
+echo "  ${BOLD}self-dojo installer${RESET}"
+echo "  ·················"
 
-# Build engine
-echo "Building Rust engine..."
-cd "${DOJO_SRC}"
-cargo build --release 2>&1 | tail -1
-echo "  Engine: ${DOJO_SRC}/target/release/dojo-engine"
+# ── Detect OS ────────────────────────────────────────────────────────
+if [[ -f /etc/arch-release ]]; then
+  PKG="sudo pacman -S --noconfirm"
+elif [[ -f /etc/debian_version ]]; then
+  PKG="sudo apt-get install -y"
+elif [[ -f /etc/fedora-release ]]; then
+  PKG="sudo dnf install -y"
+else
+  PKG=""
+fi
 
-# Install wrapper
-mkdir -p "${BIN_DIR}"
-cp "${DOJO_SRC}/dojo" "${BIN_DIR}/dojo"
-chmod +x "${BIN_DIR}/dojo"
-echo "  Wrapper: ${BIN_DIR}/dojo"
-
-# Ensure data dirs
-mkdir -p "${DATA_DIR}" "${DATA_DIR}/entries"
-
-# Check PATH
-case ":${PATH}:" in
-  *:"${BIN_DIR}":*) ;;
-  *) echo ""
-     echo "  NOTE: ${BIN_DIR} is not in your PATH."
-     echo "  Add this to your ~/.bashrc or ~/.zshrc:"
-     echo "    export PATH=\"\${HOME}/.local/bin:\${PATH}\"" ;;
-esac
-
-# Check deps
+# ── Dependencies ─────────────────────────────────────────────────────
 echo ""
-echo "Dependencies:"
-for cmd in gum sqlite3; do
-  if command -v "${cmd}" &>/dev/null; then
-    echo "  ✓ ${cmd}"
+echo "  Checking dependencies..."
+
+missing=()
+for cmd in rustc cargo sqlite3 openssl; do
+  if command -v "$cmd" &>/dev/null; then
+    echo "    ${GREEN}✓${RESET} $cmd"
   else
-    echo "  ✗ ${cmd}  (install with: sudo pacman -S ${cmd})"
+    echo "    ${RED}✗${RESET} $cmd"
+    missing+=("$cmd")
   fi
 done
 
+if [[ ${#missing[@]} -gt 0 ]]; then
+  if [[ -z "$PKG" ]]; then
+    echo ""
+    echo "  Install manually: ${missing[*]}"
+    echo "  Then re-run this script."
+    exit 1
+  fi
+  echo ""
+  echo "  Installing: ${missing[*]}"
+  $PKG rust sqlite openssl 2>&1 | tail -3 || {
+    echo "  Failed to install. Try manually: $PKG rust sqlite openssl"
+    exit 1
+  }
+fi
+
+# ── Clone or use current dir ────────────────────────────────────────
+if [[ -f "Cargo.toml" ]] && grep -q 'dojo-engine' Cargo.toml 2>/dev/null; then
+  DOJO_DIR="$(pwd)"
+  echo ""
+  echo "  Using current directory: $DOJO_DIR"
+else
+  DOJO_DIR="${HOME}/dojo"
+  if [[ -d "$DOJO_DIR" ]]; then
+    echo ""
+    echo "  Directory exists, pulling latest..."
+    cd "$DOJO_DIR" && git pull 2>/dev/null || true
+  else
+    echo ""
+    echo "  Cloning self-dojo..."
+    git clone https://github.com/janhellion/self-dojo.git "$DOJO_DIR" 2>&1 | tail -1
+  fi
+fi
+
+cd "$DOJO_DIR"
+
+# ── Build engine ─────────────────────────────────────────────────────
 echo ""
-echo "Done. Type 'dojo' to start."
+echo "  Building Rust engine..."
+cargo build --release 2>&1 | tail -2
+
+if [[ ! -x "target/release/dojo-engine" ]]; then
+  echo "  ${RED}Build failed${RESET}"
+  exit 1
+fi
+echo "  ${GREEN}Engine built${RESET}"
+
+# ── Install wrapper ──────────────────────────────────────────────────
+BIN_DIR="${HOME}/.local/bin"
+mkdir -p "$BIN_DIR"
+cp dojo "$BIN_DIR/dojo"
+chmod +x "$BIN_DIR/dojo"
+echo "  ${GREEN}Wrapper installed to ${BIN_DIR}/dojo${RESET}"
+
+# ── PATH check ───────────────────────────────────────────────────────
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+  echo ""
+  echo "  ${BOLD}Add to your shell config:${RESET}"
+  echo "    export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+  echo ""
+  echo "  Or run:  echo 'export PATH=\"\${HOME}/.local/bin:\${PATH}\"' >> ~/.bashrc"
+fi
+
+# ── Data directory ───────────────────────────────────────────────────
+DATA_DIR="${HOME}/.local/share/self-dojo"
+mkdir -p "$DATA_DIR" "$DATA_DIR/entries"
+
+echo ""
+echo "  ${BOLD}Done.${RESET}"
+echo ""
+echo "  Type ${BOLD}dojo${RESET} to start."
+echo "  Your journal will be stored in ${DATA_DIR}"
+echo ""
