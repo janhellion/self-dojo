@@ -184,6 +184,17 @@ t() {
       label_not_set)       echo "(sin configurar)" ;;
       label_back)          echo "Volver" ;;
       tags_recent)         echo "Tus etiquetas recientes:" ;;
+      # Log view
+      log_back_delete)     echo "[Enter] Volver    [d] Eliminar entrada" ;;
+      log_no_entries)      echo "Sin entradas." ;;
+      log_delete_confirm)  echo "¿Eliminar? [s] Sí [n] No  > " ;;
+      log_no_tags)         echo "No se usaron etiquetas en esta entrada." ;;
+      log_linked)          echo "Enlazado: {count} parche(s) conectados a debilidades" ;;
+      log_delete_number)   echo "Número > " ;;
+      # Connection
+      couch_connect_fail)  echo "No se pudo conectar a {url}" ;;
+      # Reusable
+      press_enter_hint)    echo "Presiona Enter" ;;
       *)                   echo "" ;;
     esac
   else
@@ -275,6 +286,17 @@ t() {
       label_not_set)       echo "(not set)" ;;
       label_back)          echo "Back" ;;
       tags_recent)         echo "Your recent tags:" ;;
+      # Log view
+      log_back_delete)     echo "[Enter] Back    [d] Delete entry" ;;
+      log_no_entries)      echo "No entries." ;;
+      log_delete_confirm)  echo "Delete? [y] Yes [n] No  > " ;;
+      log_no_tags)         echo "No tags used this entry." ;;
+      log_linked)          echo "Linked: {count} patch(es) connected to weaknesses" ;;
+      log_delete_number)   echo "Number > " ;;
+      # Connection
+      couch_connect_fail)  echo "Could not connect to {url}" ;;
+      # Reusable
+      press_enter_hint)    echo "Press Enter" ;;
       *)                   echo "" ;;
     esac
   fi
@@ -311,7 +333,7 @@ box_bot()   { echo "  ${DIM}${_box_dots}${RESET}"; }
 pick_var()  { local arr=("$@"); echo "${arr[$((RANDOM % ${#arr[@]}))]}"; }
 
 press_enter() {
-  echo ""; echo -n "  ${DIM}▸  Press Enter${RESET} "
+  echo ""; echo -n "  ${DIM}▸  $(t press_enter_hint)${RESET} "
   stty echo 2>/dev/null || true
   read -r 2>/dev/null || true  # NOT silent — user can see their keystroke
   echo ""
@@ -707,10 +729,11 @@ for p in ps: print(p)" 2>/dev/null || true)
       done <<< "${ps_text}"
     fi
     if [ "${linked}" -gt 0 ]; then
-      echo "  Linked: ${linked} patch(es) connected to weaknesses"
+      local linked_label; linked_label=$(t log_linked)
+      echo "  ${linked_label//\{count\}/${linked}}"
     fi
   else
-    echo "  No tags used this entry."
+    echo "  $(t log_no_tags)"
   fi
 
   press_enter
@@ -753,7 +776,7 @@ cmd_log() {
   echo ""
   echo "  ${DIM}${_box_dots}${RESET}"
   echo ""
-  echo "  [Enter] Back    [d] Delete entry"
+  echo "  $(t log_back_delete)"
   echo ""
   stty echo 2>/dev/null || true
   read -n 1 -r key 2>/dev/null || key=""
@@ -761,14 +784,14 @@ cmd_log() {
     d|D)
       clear
       echo ""
-      echo "  Delete entry"
+      echo "  $(t log_title)"
       echo "  ${DIM}${_box_dots}${RESET}"
       echo ""
       local del_list del_choice
       del_list=$("${ENGINE}" log 2>/dev/null || echo "")
-      del_list=$(echo "${del_list}" | grep "\.md$" | head -15 || true)
+      del_list=$(echo "${del_list}" | grep "\\.md$" | head -15 || true)
       if [[ -z "${del_list}" ]]; then
-        echo "  No entries."
+        echo "  $(t log_no_entries)"
         press_enter
         return
       fi
@@ -778,7 +801,7 @@ cmd_log() {
         i=$((i + 1))
       done <<< "${del_list}"
       echo ""
-      echo -n "  Number > "
+      echo -n "  $(t log_delete_number)"
       stty echo 2>/dev/null || true
       read -r del_choice 2>/dev/null || true
       if [[ "${del_choice}" =~ ^[0-9]+$ ]]; then
@@ -786,14 +809,14 @@ cmd_log() {
         selected_path=$(echo "${del_list}" | sed -n "${del_choice}p")
         if [[ -n "${selected_path}" ]]; then
           echo ""
-          echo -n "  Delete? [y] Yes [n] No  > "
+          echo -n "  $(t log_delete_confirm)"
           stty echo 2>/dev/null || true
           read -n 1 -r key 2>/dev/null || key="n"
           echo ""
-          if [[ "${key}" == "y" || "${key}" == "Y" ]]; then
+          if [[ "${key}" == "y" || "${key}" == "Y" || "${key}" == "s" || "${key}" == "S" ]]; then
             rm -f "${selected_path}" 2>/dev/null || true
             "${ENGINE}" remove "${selected_path}" 2>/dev/null || true
-            echo "  Deleted."
+            echo "  $(t saved_1)"
             press_enter
           fi
         fi
@@ -948,7 +971,8 @@ cmd_settings() {
           if curl -s --max-time 3 "${url}" >/dev/null 2>&1; then
             echo "  $(t check_connected | sed 's/./\u&/')"
           else
-            echo "  No se pudo conectar a ${url}"
+            local fail_msg; fail_msg=$(t couch_connect_fail)
+            echo "  ${fail_msg//\{url\}/${url}}"
           fi
           press_enter
         fi
