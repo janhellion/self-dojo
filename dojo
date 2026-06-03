@@ -993,6 +993,7 @@ main() {
   if [[ -n "${sync_url}" ]]; then
     export DOJO_COUCH_URL="${sync_url}"
     "${ENGINE}" pull 2>&1 || true
+  fi
 
   case "${1:-}" in
     log)    cmd_log ;;
