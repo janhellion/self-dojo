@@ -17,10 +17,16 @@ echo "  ·················"
 # ── Detect OS ────────────────────────────────────────────────────────
 if [[ -f /etc/arch-release ]]; then
   PKG="sudo pacman -S --noconfirm"
+  RUST_PKG="rust"
+  SQLITE_PKG="sqlite"
 elif [[ -f /etc/debian_version ]]; then
   PKG="sudo apt-get install -y"
+  RUST_PKG="cargo"
+  SQLITE_PKG="sqlite3"
 elif [[ -f /etc/fedora-release ]]; then
   PKG="sudo dnf install -y"
+  RUST_PKG="rust cargo"
+  SQLITE_PKG="sqlite"
 else
   PKG=""
 fi
@@ -46,10 +52,23 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     echo "  Then re-run this script."
     exit 1
   fi
+  
+  # Map missing commands to package names
+  pkgs_to_install=""
+  for m in "${missing[@]}"; do
+    case "$m" in
+      rustc|cargo) pkgs_to_install="$pkgs_to_install $RUST_PKG" ;;
+      sqlite3)     pkgs_to_install="$pkgs_to_install $SQLITE_PKG" ;;
+      openssl)     pkgs_to_install="$pkgs_to_install openssl" ;;
+    esac
+  done
+  # Deduplicate
+  pkgs_to_install=$(echo "$pkgs_to_install" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+  
   echo ""
-  echo "  Installing: ${missing[*]}"
-  $PKG rust sqlite openssl 2>&1 | tail -3 || {
-    echo "  Failed to install. Try manually: $PKG rust sqlite openssl"
+  echo "  Installing:$pkgs_to_install"
+  $PKG $pkgs_to_install 2>&1 | tail -5 || {
+    echo "  Failed to install. Try manually: $PKG$pkgs_to_install"
     exit 1
   }
 fi
