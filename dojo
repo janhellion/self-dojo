@@ -701,6 +701,8 @@ cmd_settings() {
         stty echo 2>/dev/null || true
         local new_name
         read -r new_name 2>/dev/null || true
+        # Strip escape sequences from accidental arrow keys
+        new_name=$(echo "$new_name" | sed 's/\x1b\[[A-Za-z]//g')
         [[ -n "${new_name}" ]] && set_config "name" "${new_name}"
         ;;
       a|A)
@@ -722,6 +724,7 @@ cmd_settings() {
         stty echo 2>/dev/null || true
         local url
         read -r url 2>/dev/null || true
+        url=$(echo "$url" | sed 's/\x1b\[[A-Za-z]//g')
         set_config "couch_url" "${url}"
         # Test connection if URL was entered
         if [[ -n "${url}" ]]; then
@@ -806,6 +809,7 @@ first_run() {
   stty echo 2>/dev/null || true
   local new_name
   read -r new_name 2>/dev/null || true
+  new_name=$(echo "$new_name" | sed 's/\x1b\[[A-Za-z]//g')
   [[ -z "${new_name}" || "${new_name}" == "q" ]] && new_name="you"
   set_config "name" "${new_name}"
 
