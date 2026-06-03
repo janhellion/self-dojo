@@ -105,6 +105,10 @@ t() {
       mood_scattered)      echo "disperso" ;;
       mood_energetic)      echo "enérgico" ;;
       mood_frustrated)     echo "frustrado" ;;
+      # Time of day
+      tod_morning)         echo "mañana" ;;
+      tod_afternoon)       echo "tarde" ;;
+      tod_evening)         echo "noche" ;;
       mood_reflective)     echo "reflexivo" ;;
       mood_neutral)        echo "neutral" ;;
       # Prompt
@@ -207,6 +211,10 @@ t() {
       mood_frustrated)     echo "frustrated" ;;
       mood_reflective)     echo "reflective" ;;
       mood_neutral)        echo "neutral" ;;
+      # Time of day
+      tod_morning)         echo "morning" ;;
+      tod_afternoon)       echo "afternoon" ;;
+      tod_evening)         echo "evening" ;;
       prompt_intro)        pick_var "I wonder..." "Here is one..." "Something to reflect on..." ;;
       prompt_write_hint)   echo "[Enter] Write" ;;
       prompt_roll)         echo "[r] Another" ;;
@@ -380,6 +388,66 @@ MOOD_PROMPTS_ES["reflective"]="¿Qué me ayudó a transicionar entre tareas?|¿C
 
 MOOD_PROMPTS_ES["neutral"]="¿Qué me robó la atención hoy?|¿Qué me ayudó a transicionar entre tareas?|¿Hubo un momento de flow? ¿Qué lo provocó?|¿Cuándo me sentí comprendido hoy?|¿Qué hice hoy solo para mí?|¿Qué pequeña victoria pasó desapercibida?|¿Qué aprendí haciendo en vez de pensando?|¿Qué está en el fondo ahora mismo?"
 
+# ═══════════════════════════════════════════════════════════════════════
+# Time-of-day prompt pools — used by default, before mood selection
+# These shift the journaling focus to where you are in the day
+# ═══════════════════════════════════════════════════════════════════════
+
+# Morning: intention, sensory prep, energy planning, removal
+TIME_PROMPTS_MORNING="What do I want to feel today?|What is one thing I want to protect today?|What transition do I need into this day?|What energy level am I starting with, and what does that mean?|What sensory setup would help me today?|What one thing would make today feel okay?|Am I already planning too much?|What can I remove from today before it starts?"
+
+# Afternoon: check-in, reorientation, needs assessment
+TIME_PROMPTS_AFTERNOON="How has my energy shifted since this morning?|What have I accomplished so far, no matter how small?|What do I need right now to keep going?|What pulled my focus, and was it worth following?|Am I hungry, tired, or overstimulated?|What can I let go of for the rest of the day?|What boundary do I need to set for the afternoon?|What would be a good reset right now?"
+
+# Evening: decompress, reflection, win acknowledgment, tomorrow light-prep
+TIME_PROMPTS_EVENING="What went better than expected today?|What is one thing I can let go of before sleep?|What did I learn about myself today?|What am I carrying from today that I can set down?|What sensory input do I need to wind down?|What small win deserves acknowledgment?|What would make tomorrow morning easier?|Did I meet myself where I was today?"
+
+# ── Spanish time-of-day pools ──────────────────────────────────────────
+
+TIME_PROMPTS_MORNING_ES="¿Qué quiero sentir hoy?|¿Qué una cosa quiero proteger hoy?|¿Qué tipo de transición necesito para empezar el día?|¿Con qué nivel de energía empiezo y qué significa eso?|¿Qué preparación sensorial me ayudaría hoy?|¿Qué es lo único que haría que hoy se sienta bien?|¿Ya estoy planeando demasiado?|¿Qué puedo quitar de hoy antes de que empiece?"
+
+TIME_PROMPTS_AFTERNOON_ES="¿Cómo ha cambiado mi energía desde esta mañana?|¿Qué he logrado hasta ahora, sin importar qué tan pequeño?|¿Qué necesito ahora mismo para seguir?|¿Qué me robó la atención y valió la pena seguirlo?|¿Tengo hambre, cansancio o sobreestimulación?|¿Qué puedo soltar del resto del día?|¿Qué límite necesito poner para la tarde?|¿Qué sería un buen reinicio ahora?"
+
+TIME_PROMPTS_EVENING_ES="¿Qué salió mejor de lo esperado hoy?|¿Qué es una cosa que puedo soltar antes de dormir?|¿Qué aprendí sobre mí mismo hoy?|¿Qué cargo hoy que puedo dejar ir?|¿Qué entrada sensorial necesito para desconectar?|¿Qué pequeña victoria merece reconocimiento?|¿Qué haría que mañana en la mañana sea más fácil?|¿Me encontré a mí mismo donde estaba hoy?"
+
+# Detect time of day (morning/afternoon/evening)
+detect_time_of_day() {
+  local h
+  h=$(date +%H)
+  # Strip leading zero
+  h=$((10#$h))
+  if [ "$h" -lt 12 ]; then
+    echo "morning"
+  elif [ "$h" -lt 18 ]; then
+    echo "afternoon"
+  else
+    echo "evening"
+  fi
+}
+
+# Pick a random prompt from a time-of-day pool
+pick_time_prompt() {
+  local tod="${1:-morning}"
+  local pool
+  if [[ "${LANG}" == "es" ]]; then
+    case "${tod}" in
+      morning)   pool="${TIME_PROMPTS_MORNING_ES}" ;;
+      afternoon) pool="${TIME_PROMPTS_AFTERNOON_ES}" ;;
+      evening)   pool="${TIME_PROMPTS_EVENING_ES}" ;;
+      *)         pool="${TIME_PROMPTS_MORNING_ES}" ;;
+    esac
+  else
+    case "${tod}" in
+      morning)   pool="${TIME_PROMPTS_MORNING}" ;;
+      afternoon) pool="${TIME_PROMPTS_AFTERNOON}" ;;
+      evening)   pool="${TIME_PROMPTS_EVENING}" ;;
+      *)         pool="${TIME_PROMPTS_MORNING}" ;;
+    esac
+  fi
+  local IFS='|'; local prompts=($pool)
+  echo "${prompts[$((RANDOM % ${#prompts[@]}))]}"
+}
+
 # Pick mood key from selection index (1-8)
 mood_key_for() {
   case "$1" in
@@ -409,7 +477,7 @@ pick_mood_prompt() {
 # ═══════════════════════════════════════════════════════════════════════
 
 cmd_new() {
-  local date_str human_date human_time filepath slug prompt key mood
+  local date_str human_date human_time filepath slug prompt key mood mood_mode time_of_day
   date_str=$(date +%Y-%m-%d)
   human_date=$(date +"%A, %B %d, %Y")
   human_time=$(date +"%H:%M")
@@ -419,6 +487,10 @@ cmd_new() {
   while [[ -f "${filepath}" ]]; do
     filepath="${ENTRIES_DIR}/${slug}_${c}.md"; c=$((c + 1))
   done
+
+  # Detect time of day for prompt pool
+  time_of_day=$(detect_time_of_day)
+  mood_mode=0  # 0 = time-based prompts, 1 = mood-based
 
   # ── Mood selection ──────────────────────────────────────────────────
   stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
@@ -457,7 +529,8 @@ cmd_new() {
     echo "  1–10 please"
   done
 
-  prompt=$(pick_mood_prompt "${mood}")
+  # Start with a time-of-day prompt (mood still saved for frontmatter)
+  prompt=$(pick_time_prompt "${time_of_day}")
 
   # ── Fetch recent tags for suggestions ──────────────────────────────
   local recent_tags unresolved resolved_pairs
@@ -476,7 +549,7 @@ cmd_new() {
     echo ""
     echo "  ᗢ"
     echo ""
-    echo "  ${DIM}${human_date}  ${human_time}${RESET}"
+    echo "  ${DIM}${human_date}  ${human_time}  ·  ${DIM}$(_t tod_${time_of_day})${RESET}"
     echo ""
     echo "  ${prompt}"
     echo ""
@@ -502,8 +575,15 @@ cmd_new() {
     read -n 1 -r key 2>/dev/null || true
     echo ""
     case "${key}" in
-      r|R) prompt=$(pick_mood_prompt "${mood}"); continue ;;
-      m|M) 
+      r|R)
+        if [[ "${mood_mode}" -eq 1 ]]; then
+          prompt=$(pick_mood_prompt "${mood}")
+        else
+          prompt=$(pick_time_prompt "${time_of_day}")
+        fi
+        continue ;;
+      m|M)
+        mood_mode=1
         # Back to mood selection
         stty sane 2>/dev/null || true; stty echo 2>/dev/null || true; clear
         echo ""
