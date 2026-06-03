@@ -525,25 +525,43 @@ fn cmd_pull(database: &db::Database) {
             continue;
         }
 
-        // Extract file_path from doc, or derive from doc_id
-        let file_path = doc["file_path"].as_str()
-            .unwrap_or(doc_id.trim_start_matches("entry_"))
+        // Extract just the filename from remote path
+        let raw_name = doc["file_path"].as_str()
+            .unwrap_or(doc_id.trim_start_matches("entry_"));
+        let file_name = std::path::Path::new(raw_name)
+            .file_name()
+            .unwrap_or(std::ffi::OsStr::new(""))
+            .to_string_lossy()
             .to_string();
-
-        // Check if this file already exists in the local DB
-        if database.entry_exists(&file_path) {
+        if file_name.is_empty() {
             skipped += 1;
             continue;
         }
 
-        // Write the markdown file
-        if let Err(_) = std::fs::write(&file_path, &content) {
+        // Build local path: entries/ next to the database
+        let db_parent = std::path::Path::new(&get_db_path(None))
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let local_path = db_parent.join("entries").join(&file_name);
+        let local_str = local_path.to_string_lossy().to_string();
+
+        // Check by filename only — compare against any entry ending with this filename
+        let local_exists = database.all_entries().unwrap_or_default()
+            .iter().any(|e| e.file_path.ends_with(&file_name));
+        if local_exists {
             skipped += 1;
             continue;
         }
 
-        // Register the entry (parses frontmatter + markers)
-        cmd_new(database, &file_path, None, None, None);
+        // Write the markdown file to local entries/
+        if let Err(_) = std::fs::write(&local_path, &content) {
+            skipped += 1;
+            continue;
+        }
+
+        // Register the entry
+        cmd_new(database, &local_str, None, None, None);
         imported += 1;
     }
 

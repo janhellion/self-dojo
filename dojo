@@ -673,7 +673,53 @@ cmd_log() {
   echo ""
   echo "  ${DIM}${_box_dots}${RESET}"
   echo ""
-  press_enter
+  echo "  [Enter] Back    [d] Delete entry"
+  echo ""
+  stty echo 2>/dev/null || true
+  read -n 1 -r key 2>/dev/null || key=""
+  case "${key}" in
+    d|D)
+      clear
+      echo ""
+      echo "  Delete entry"
+      echo "  ${DIM}${_box_dots}${RESET}"
+      echo ""
+      local del_list del_choice
+      del_list=$("${ENGINE}" log 2>/dev/null || echo "")
+      del_list=$(echo "${del_list}" | grep "\.md$" | head -15 || true)
+      if [[ -z "${del_list}" ]]; then
+        echo "  No entries."
+        press_enter
+        return
+      fi
+      local i=1
+      while IFS= read -r del_path; do
+        echo "  [${i}] ${del_path}"
+        i=$((i + 1))
+      done <<< "${del_list}"
+      echo ""
+      echo -n "  Number > "
+      stty echo 2>/dev/null || true
+      read -r del_choice 2>/dev/null || true
+      if [[ "${del_choice}" =~ ^[0-9]+$ ]]; then
+        local selected_path
+        selected_path=$(echo "${del_list}" | sed -n "${del_choice}p")
+        if [[ -n "${selected_path}" ]]; then
+          echo ""
+          echo -n "  Delete? [y] Yes [n] No  > "
+          stty echo 2>/dev/null || true
+          read -n 1 -r key 2>/dev/null || key="n"
+          echo ""
+          if [[ "${key}" == "y" || "${key}" == "Y" ]]; then
+            rm -f "${selected_path}" 2>/dev/null || true
+            "${ENGINE}" remove "${selected_path}" 2>/dev/null || true
+            echo "  Deleted."
+            press_enter
+          fi
+        fi
+      fi
+      ;;
+  esac
 }
 
 cmd_deck() {
