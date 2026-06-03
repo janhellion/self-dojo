@@ -729,7 +729,7 @@ cmd_check() {
 
   local engine_check olla couch entry_count models
   export DOJO_COUCH_URL="$(get_config couch_url || true)"
-  engine_check=$("${ENGINE}" check 2>&1 || echo '{"ollama":false,"couchdb":false,"models":[]}')
+  engine_check=$("${ENGINE}" check 2>/dev/null || echo '{"ollama":false,"couchdb":false,"models":[]}')
   olla=$(echo "${engine_check}" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('ollama') else 'false')" 2>/dev/null || echo "false")
   couch=$(echo "${engine_check}" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('couchdb') else 'false')" 2>/dev/null || echo "false")
   entry_count=$("${ENGINE}" deck 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_entries',0))" 2>/dev/null || echo "0")
@@ -992,9 +992,7 @@ main() {
   sync_url=$(get_config "couch_url")
   if [[ -n "${sync_url}" ]]; then
     export DOJO_COUCH_URL="${sync_url}"
-    pull_result=$("${ENGINE}" pull 2>&1 || true)
-    imported=$(echo "$pull_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get("imported","?"))" 2>/dev/null || echo "")
-  [[ -n "$imported" && "$imported" -gt 0 ]] && echo "  Pulled $imported entries from sync"
+    "${ENGINE}" pull 2>&1 || true
 
   case "${1:-}" in
     log)    cmd_log ;;
