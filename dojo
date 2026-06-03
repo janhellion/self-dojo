@@ -118,8 +118,11 @@ t() {
       prompt_mood)         echo "[m] Cambiar estado" ;;
       # Tags
       tag_title)           echo "Etiqueta lo que notes (opcional):" ;;
+      tag_example)         echo "lucha: @weakness[cosa]     solución: @patch[solución]" ;;
       tag_stuck)           echo "me trabó...    @weakness[cosa]" ;;
       tag_helped)          echo "me ayudó...   @patch[solución]" ;;
+      tag_still_open)      echo "Abiertos:" ;;
+      tag_solved)          echo "Resueltos:" ;;
       # Editor
       editor_open)         echo "Presiona Enter para abrir ${EDITOR}..." ;;
       # Saved
@@ -231,8 +234,11 @@ t() {
       prompt_roll)         echo "[r] Another" ;;
       prompt_mood)         echo "[m] Change mood" ;;
       tag_title)           echo "Tag what you notice (optional):" ;;
+      tag_example)         echo "struggle: @weakness[thing]     solution: @patch[solution]" ;;
       tag_stuck)           echo "stuck by...   @weakness[thing]" ;;
       tag_helped)          echo "helped by...  @patch[solution]" ;;
+      tag_still_open)      echo "Still open:" ;;
+      tag_solved)          echo "Solved:" ;;
       editor_open)         echo "Press Enter to open ${EDITOR}..." ;;
       saved_1)             echo "Entry saved." ;;
       saved_2)             echo "Recorded." ;;
@@ -580,15 +586,15 @@ cmd_new() {
     echo "  ${prompt}"
     echo ""
     echo "  ${DIM}$(t tag_title)${RESET}"
-    echo "  ${DIM}struggle: @weakness[thing]     solution: @patch[solution]${RESET}"
+    echo "  ${DIM}$(t tag_example)${RESET}"
     # Show unresolved weaknesses as suggestions
     if [[ -n "${recent_tags}" ]]; then
       echo ""
-      echo "  ${DIM}Still open: ${recent_tags}${RESET}"
+      echo "  ${DIM}$(t tag_still_open) ${recent_tags}${RESET}"
     fi
     # Show recent solutions that worked
     if [[ -n "${resolved_pairs}" ]]; then
-      echo "  ${DIM}Solved:${RESET}"
+      echo "  ${DIM}$(t tag_solved)${RESET}"
       while IFS= read -r pair; do
         [[ -n "${pair}" ]] && echo "  ${DIM}  ${pair}${RESET}"
       done <<< "${resolved_pairs}"

@@ -5,11 +5,7 @@ const DEFAULT_COUCH_URL: &str = "http://localhost:5984/self-dojo";
 
 /// Push a markdown file with its SQLite rows to CouchDB.
 /// couch_url is the full database URL, e.g. https://user:pass@host/self-dojo
-pub fn push_to_couch(
-    file_path: &str,
-    entry_json: &Value,
-    couch_url: &str,
-) -> Result<(), String> {
+pub fn push_to_couch(file_path: &str, entry_json: &Value, couch_url: &str) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -36,6 +32,14 @@ pub fn push_to_couch(
         "sqlite_rows": entry_json,
     });
 
+    // Create database if it doesn't exist (CouchDB returns 404 on PUT doc when DB missing)
+    let db_check = client.get(&url).send();
+    if let Ok(resp) = db_check {
+        if resp.status().as_u16() == 404 {
+            let _ = client.put(&url).send();
+        }
+    }
+
     let put_resp = client
         .put(format!("{}/{}", url, doc_id))
         .json(&doc)
@@ -59,7 +63,8 @@ pub fn check_couch(couch_url: &str) -> bool {
         Err(_) => return false,
     };
     match client.get(couch_url).send() {
-        Ok(r) => r.status().is_success() || r.status().as_u16() == 401,
+        // Accept 200 (exists), 401 (needs auth), 404 (not created yet — push will create it)
+        Ok(r) => r.status().is_success() || r.status().as_u16() == 401 || r.status().as_u16() == 404,
         Err(_) => false,
     }
 }
@@ -107,7 +112,9 @@ pub fn fetch_doc(couch_url: &str, doc_id: &str) -> Result<Value, String> {
         .build()
         .map_err(|e| format!("HTTP client: {}", e))?;
     let url = format!("{}/{}", couch_url.trim_end_matches('/'), doc_id);
-    let resp = client.get(&url).send()
+    let resp = client
+        .get(&url)
+        .send()
         .map_err(|e| format!("GET failed: {}", e))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
