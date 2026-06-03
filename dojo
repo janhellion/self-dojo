@@ -994,7 +994,7 @@ main() {
     export DOJO_COUCH_URL="${sync_url}"
     pull_result=$("${ENGINE}" pull 2>&1 || true)
     imported=$(echo "$pull_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get("imported","?"))" 2>/dev/null || echo "")
-    [[ -n "$imported" && "$imported" -gt 0 ]] && echo "  Pulled $imported entries from sync"\n  fi
+  [[ -n "$imported" && "$imported" -gt 0 ]] && echo "  Pulled $imported entries from sync"
 
   case "${1:-}" in
     log)    cmd_log ;;
