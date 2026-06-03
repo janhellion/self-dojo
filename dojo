@@ -987,6 +987,14 @@ main() {
     db_decrypt
   fi
 
+  # Pull remote entries on startup
+  local sync_url
+  sync_url=$(get_config "couch_url")
+  if [[ -n "${sync_url}" ]]; then
+    export DOJO_COUCH_URL="${sync_url}"
+    "${ENGINE}" pull 2>/dev/null || true
+  fi
+
   case "${1:-}" in
     log)    cmd_log ;;
     deck)   cmd_deck ;;

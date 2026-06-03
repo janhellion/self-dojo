@@ -66,6 +66,8 @@ enum Commands {
     Deck,
     /// Sync entries to CouchDB
     Sync,
+    /// Pull entries from CouchDB
+    Pull,
     /// Check Ollama connection
     Check,
     /// Remove an entry by file path
@@ -119,6 +121,7 @@ fn main() {
         Commands::Log => cmd_log(&database),
         Commands::Deck => cmd_deck(&database),
         Commands::Sync => cmd_sync(&database),
+        Commands::Pull => cmd_pull(&database),
         Commands::Check => cmd_check(),
         Commands::Remove { file } => cmd_remove(&database, file),
     }
@@ -480,6 +483,76 @@ fn cmd_sync(database: &db::Database) {
             "synced": synced,
             "failed": failed,
             "couch_url": couch_url
+        })
+    );
+}
+
+fn cmd_pull(database: &db::Database) {
+    let couch_url = sync::get_couch_url();
+
+    if !sync::check_couch(&couch_url) {
+        eprintln!("CouchDB not reachable at {}", couch_url);
+        return;
+    }
+
+    let doc_ids = sync::list_remote_docs(&couch_url);
+    if doc_ids.is_empty() {
+        println!("{}", serde_json::json!({"imported": 0, "source": couch_url}));
+        return;
+    }
+
+    let mut imported = 0;
+    let mut skipped = 0;
+
+    for doc_id in &doc_ids {
+        if !doc_id.starts_with("entry_") {
+            skipped += 1;
+            continue;
+        }
+
+        let doc = match sync::fetch_doc(&couch_url, doc_id) {
+            Ok(d) => d,
+            Err(_) => { skipped += 1; continue; }
+        };
+
+        let content = match doc["content"].as_str() {
+            Some(c) => c.to_string(),
+            None => { skipped += 1; continue; }
+        };
+
+        if content.trim().is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        // Extract file_path from doc, or derive from doc_id
+        let file_path = doc["file_path"].as_str()
+            .unwrap_or(doc_id.trim_start_matches("entry_"))
+            .to_string();
+
+        // Check if this file already exists in the local DB
+        if database.entry_exists(&file_path) {
+            skipped += 1;
+            continue;
+        }
+
+        // Write the markdown file
+        if let Err(_) = std::fs::write(&file_path, &content) {
+            skipped += 1;
+            continue;
+        }
+
+        // Register the entry (parses frontmatter + markers)
+        cmd_new(database, &file_path, None, None, None);
+        imported += 1;
+    }
+
+    println!(
+        "{}",
+        serde_json::json!({
+            "imported": imported,
+            "skipped": skipped,
+            "source": couch_url,
         })
     );
 }

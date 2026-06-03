@@ -99,3 +99,18 @@ pub fn list_remote_docs(couch_url: &str) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// Fetch a single document from CouchDB by ID. Returns its JSON content.
+pub fn fetch_doc(couch_url: &str, doc_id: &str) -> Result<Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client: {}", e))?;
+    let url = format!("{}/{}", couch_url.trim_end_matches('/'), doc_id);
+    let resp = client.get(&url).send()
+        .map_err(|e| format!("GET failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.json().map_err(|e| format!("JSON parse: {}", e))
+}
